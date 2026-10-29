@@ -6,8 +6,8 @@
 
 ## 배포 순서
 
-1. 최신 앱 소스와 루트의 `render.yaml`, `deploy/render/`를 GitHub 저장소의 배포할 브랜치에 올린다. 기존 GitHub `main`에 README만 있다면 연결만으로 앱을 배포할 수 없다. 제공 ZIP의 `dispatch/`가 저장소 루트가 되어야 한다.
-2. Render에 로그인하고 GitHub 저장소 접근을 연결한다. `New → Blueprint`에서 해당 저장소·브랜치와 `render.yaml`을 선택한다. 서비스 플랜이 `Free`인지 확인한다. 자동 배포는 꺼져 있다.
+1. 최신 앱 소스와 루트의 `render.yaml`, `deploy/render/`를 GitHub 저장소의 배포할 브랜치에 올린다. 이 앱의 배포 브랜치는 `codex/free-node-test`다. 기존 GitHub `main`에 README만 있다면 연결만으로 앱을 배포할 수 없다. 제공 ZIP의 `dispatch/`가 저장소 루트가 되어야 한다.
+2. Render에 로그인하고 GitHub 저장소 접근을 연결한다. `New → Blueprint`에서 저장소 `bobjjangs-glitch/-system`, Branch `codex/free-node-test`, Blueprint Path `render.yaml`을 선택한다. Blueprint Name은 `systemfile`을 사용할 수 있다. `README.md`는 소개 문서이므로 Blueprint Path로 넣으면 설정을 읽지 못한다. 서비스 플랜이 `Free`인지 확인한다. 자동 배포는 꺼져 있다.
 3. 생성 후 빌드·시작 로그와 상태 검사 성공을 확인한다. Render가 제공하는 실제 HTTPS 서비스 주소가 생겨야 외부 접속이 완료된 것이다. 파일 생성이나 로컬 테스트 성공만으로 배포가 완료되지는 않는다.
 4. Render 서비스의 보안 환경 변수 화면에서 자동 생성된 `DISPATCH_BOOTSTRAP_TOKEN`을 확인한다. 채팅·GitHub·앱 설정에 복사하지 않는다. 앱의 최초 관리자 등록 화면에서만 등록 코드로 사용하고, 본인이 정한 관리자 PIN을 등록한다.
 5. 관리자 `현황 → 대전 예시 데이터로 둘러보기`로 기사 5명·배송지 25곳을 만든다. 기사 PIN은 발급 화면에서 확인한다. 회사 설정에서 회사 출발·복귀 주소를 바꾸고 코스 생성·전표 업로드·배송 처리·내역을 확인한다.
@@ -33,7 +33,7 @@ Expo Go는 iOS·Android에서 화면·전표·배차·전경 위치를 테스트
 - Render용 `npm ci`·웹 빌드·운영 의존성 정리와 실제 시작 명령을 별도 디렉터리에서 실행해 통과했다. package.json·잠금 파일이 바뀌지 않았고, 기존 개발 DB도 초기화하지 않았다.
 - 임시 데이터로 웹 HTML·실제 JS 번들, 등록 코드 없는 관리자 생성 거부, 정상 등록·PIN 로그인, 기사 5명·배송지 25곳·왕복 코스 5개, 실제 한글 이미지 OCR과 검토 전 미등록, 인증된 WebSocket 연결을 확인했다. 도로 서비스가 차단되어 경로 시간은 `approximate`로 표시되는 것도 확인했다. 실제 Render 서버의 자원 제한·외부 접속·휴대폰 GPS 검증은 남아 있다.
 - Render와 익명 임시 주소 서비스 접근이 실행 환경의 네트워크 정책에서 403으로 차단되었다. 연결된 Render 계정·API 인증과 공개 포트 제공 기능도 없다. 따라서 공개 URL이 발급된 상태가 아니다.
-- 앱과 무료 배포 설정은 로컬 `codex/free-node-test` 브랜치에 정리했다. GitHub 업로드는 자동 승인 검토가 저장소의 공개 여부·소유권과 명시적 업로드 승인 미확인을 이유로 거절했다. 사용자 승인 전에는 업로드를 재시도하거나 다른 수단으로 우회하지 않는다. GitHub 원격에 이 브랜치가 올라갔다고 가정하지 않는다.
+- 앱과 무료 배포 설정은 `codex/free-node-test` 브랜치에 정리했다. 사용자가 앱 전체 소스를 기존 GitHub 저장소의 해당 브랜치에 올리는 요청에 `업로드해줘`라고 명시적으로 승인했다. 원격 업로드 여부는 `git ls-remote --heads origin codex/free-node-test`의 커밋과 로컬 HEAD를 비교해 확인한다. 소스 업로드와 Render 서버 배포는 별개다.
 - 환경 설정 초안의 도메인 추가는 현재 실행 환경에 즉시 적용되지 않는다. Render 네트워크 접근과 계정 연결이 마련되면 실제 배포·외부 접속을 계속 확인해야 한다.
 
 에이전트가 API로 배포를 계속하려면 Render 계정에서 API 키를 발급해 클라우드 환경의 보안 설정에 `RENDER_API_KEY`로 연결한다. 키 원문을 채팅에 보내지 않는다. 이 인증과 Render 접근이 준비되기 전에는 배포 완료나 HTTPS 주소 발급을 주장하지 않는다. 브라우저에 로그인한 상태만으로 에이전트의 API 인증이 생기지는 않는다.

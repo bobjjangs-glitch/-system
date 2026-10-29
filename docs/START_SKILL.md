@@ -103,4 +103,6 @@ EXPO_NO_TELEMETRY=1 EXPO_OFFLINE=1 CI=1 npm run export:mobile -- --output-dir /w
 
 현재 실행 환경은 Render와 공개 임시 주소 서비스에 403을 반환한다. 연결된 Render 인증이나 공개 포트 기능도 없다. 필요한 Render 도메인과 RENDER_API_KEY 보안 연결 요구사항은 환경 설정 초안에 추가한다. 준비 상태와 실제 접근을 확인하고 기존 바인딩을 사용하며 API 키를 출력하지 않는다. 계정·네트워크가 준비되면 실제 배포 상태와 외부 HTTPS·WebSocket을 검증한다. 브라우저 로그인만으로 API 인증이 제공된다고 가정하지 않는다. SQLite·전표·계정은 무료 서버 재시작·재배포 시 사라질 수 있으므로 예시 데이터만 사용한다. 백그라운드 위치는 별도 네이티브 기기 검증이 필요하다.
 
-앱 소스와 무료 배포 설정은 로컬 `codex/free-node-test` 브랜치에 커밋했으나 원격 업로드는 완료되지 않았다. `git push`는 자동 승인 검토에서 앱 소스의 외부 전송에 대해 저장소의 공개 여부·소유권과 사용자의 명시적 업로드 승인이 확인되지 않았다는 이유로 거절되었다. 사용자 승인이 오기 전에는 push를 재시도하거나 다른 업로드 수단으로 우회하지 않는다. 이 제한을 Render API나 별도 저장소 업로드로 피하지 않는다. 승인 후 기존 플랫폼 Git 인증을 사용해 해당 브랜치만 업로드하고 성공을 검증한다.
+앱 소스와 무료 배포 설정의 브랜치는 `codex/free-node-test`다. 사용자는 앱 전체 소스를 기존 `bobjjangs-glitch/-system` 저장소의 이 브랜치로 업로드해도 되는지 묻는 요청에 `업로드해줘`라고 명시적으로 승인했다. 이 범위의 승인을 반복해서 묻지 않는다. 기존 플랫폼 Git 인증을 사용해 해당 브랜치를 업로드하고, 원격 브랜치 커밋이 로컬 HEAD와 일치하는지 확인한다. GitHub 업로드와 Render 서버 배포는 별개로 검증한다.
+
+Render Blueprint 생성 화면에서는 Blueprint Name `systemfile`, Branch `codex/free-node-test`, Blueprint Path `render.yaml`을 사용한다. `main`의 README만 읽어서는 앱을 배포할 수 없다. 사용자가 Path에 `README.md`를 입력했을 때 `EOF` 오류가 났으므로 이 값을 배포 설정 파일 경로로 안내한다. 이 대화에는 열린 사용자 브라우저를 클릭하는 기능이 없으므로 브라우저 조작을 했다고 주장하지 않는다.
