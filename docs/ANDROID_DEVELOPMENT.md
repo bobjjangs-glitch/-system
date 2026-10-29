@@ -68,7 +68,9 @@ EXPO_PUBLIC_API_URL=http://127.0.0.1:4000 npx expo start --dev-client --localhos
 
 위 개발 주소를 직원용 앱의 실제 서버 주소로 사용하지 않습니다. 직원용 빌드에서는 카페24의 HTTPS API 주소를 설정합니다.
 
-## 현재 컴파일 확인 결과
+## 개발 빌드 기록과 LDPlayer APK
+
+이후 네트워크 허용이 실행 환경에 반영되었고 독립 실행 release APK를 생성해 서명·무결성 검증을 마쳤습니다. 파일은 `/workspace/artifacts/bareun-dispatch-ldplayer-x86_64-test-0ee74c4.apk`이며 Metro가 필요 없습니다. LDPlayer 9 64비트 설치 절차와 검증 범위는 [LDPLAYER_APK.md](LDPLAYER_APK.md)를 따릅니다. 실제 LDPlayer 설치·실행은 아직 확인하지 않았습니다. 아래 내용은 이전 debug 개발 빌드 시도의 기록입니다.
 
 직접 Gradle 컴파일에서 플러그인·앱 코드 생성과 리소스 작업까지 실행됐지만, 필수 React Native 0.86.3 debug AAR을 Maven에서 내려받는 과정이 `repo.reactnative.dev`로 연결되며 403으로 차단되었습니다. 허용된 Maven Central 두 호스트에서도 같은 문제를 확인했습니다. 필요한 `repo.reactnative.dev` 접근 요구사항은 환경 초안에 추가했습니다. 저장된 초안과 실행 환경의 실제 적용 상태는 별개입니다.
 

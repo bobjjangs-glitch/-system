@@ -24,7 +24,7 @@ fi
 
 # Release mode embeds the JS bundle; the generated project's test signing key
 # makes this a test APK, not the company's production-signed employee build.
-bash android/gradlew -p android :app:assembleRelease \
+bash android/gradlew -p android -I "$PWD/deploy/android/ldplayer-resource-limits.gradle" :app:assembleRelease \
   -PreactNativeArchitectures=x86_64 --no-parallel --max-workers="$bareun_workers" \
   --build-cache --console=plain "$@"
 

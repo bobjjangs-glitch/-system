@@ -39,7 +39,7 @@ npm run server:dev
 
 ## Expo 개발 서버 시작과 확인
 
-현재 목표는 Expo 개발 빌드다. 먼저 아래 Android 빌드·설치 절차를 수행하고 APK가 실제 설치된 뒤 Metro를 별도 지속 터미널에서 실행한다. CI 모드는 Metro의 변경 감지를 끄므로 이 프로세스에서는 CI 변수를 제거한다. 오프라인 설정은 설치한 SDK의 번들을 실행하기 위한 기본값이며, 주소 검색 같은 백엔드 요청의 성공을 뜻하지 않는다.
+Expo 개발 빌드를 요청한 경우 아래 Android 빌드·설치 절차를 수행하고 APK가 실제 설치된 뒤 Metro를 별도 지속 터미널에서 실행한다. 현재 우선 목표인 LDPlayer 독립 실행 APK는 마지막 절을 따른다. CI 모드는 Metro의 변경 감지를 끄므로 개발 서버 프로세스에서는 CI 변수를 제거한다. 오프라인 설정은 설치한 SDK의 번들을 실행하기 위한 기본값이며, 주소 검색 같은 백엔드 요청의 성공을 뜻하지 않는다.
 
 각 터미널에서 `source scripts/cloud-android-env.sh`로 JDK·SDK·Gradle 경로를 활성화한다. 이 환경은 KVM 가속이 없으므로 `docs/ANDROID_DEVELOPMENT.md`의 headless 소프트웨어 모드로 `Bareun_API_36`을 시작한다. 기존 관련 가상 기기가 실행 중이면 재사용하고, 다른 기기는 종료하지 않는다. `adb devices -l`과 `adb -s emulator-5554 shell getprop sys.boot_completed`의 1을 확인한다. 가상 기기 부팅은 확인했지만 APK 설치는 아직 완료되지 않았다.
 
@@ -51,7 +51,7 @@ source scripts/cloud-android-env.sh
 NODE_ENV=development EXPO_NO_TELEMETRY=1 EXPO_OFFLINE=1 npx expo run:android --device Bareun_API_36 --no-bundler
 ```
 
-현재 명령은 필수 `react-android-0.86.3-debug.aar` 다운로드가 `repo.reactnative.dev`에서 403으로 차단되어 실패했다. 이 도메인 요구사항은 초안에 저장했다. 실제 실행 환경에 허용이 적용되었는지 확인한 뒤 영향을 받은 단계만 재실행하고 유효한 Gradle 캐시를 보존한다. APK 생성·설치를 성공했다고 주장하지 않는다. iOS 컴파일은 선택되지 않았으며 Mac·Xcode 환경이 별도로 필요하다.
+이 개발 빌드 명령은 이전에 `repo.reactnative.dev`의 debug AAR 다운로드가 403으로 차단되어 실패했다. 이후 실행 환경의 네트워크 허용이 반영되었고 별도 release APK 빌드가 성공했다. 위 debug 빌드와 AVD 설치는 다시 실행하지 않았다. 유효한 Gradle 캐시를 보존하고 APK 생성과 실제 기기 설치를 구분한다. iOS 컴파일은 선택되지 않았으며 Mac·Xcode 환경이 별도로 필요하다.
 
 APK가 설치되면 ADB로 개발용 로컬 API와 Metro 포트를 연결하고 개발 서버를 시작한다.
 
@@ -101,7 +101,7 @@ EXPO_NO_TELEMETRY=1 EXPO_OFFLINE=1 CI=1 npm run export:mobile -- --output-dir /w
 
 별도 복사본에서 Render용 설치·웹 export·운영 의존성 정리·실제 시작 명령을 실행했다. 임시 데이터로 최초 등록 보호·로그인, 기사 5명·대전 배송지 25곳·왕복 코스 5개, 실제 한글 전표 OCR과 검토 후 등록 보호, 인증된 WebSocket 연결을 확인했다. 원본 소스·잠금 파일·개발 DB는 보존했다. 외부 경로 서비스 차단에 따라 예상 시간은 approximate로 확인했다. 이 결과는 실제 Render 배포나 무료 서버 메모리 한도 검증을 뜻하지 않는다.
 
-현재 실행 환경은 Render와 공개 임시 주소 서비스에 403을 반환한다. 연결된 Render 인증이나 공개 포트 기능도 없다. 필요한 Render 도메인과 RENDER_API_KEY 보안 연결 요구사항은 환경 설정 초안에 추가한다. 준비 상태와 실제 접근을 확인하고 기존 바인딩을 사용하며 API 키를 출력하지 않는다. 계정·네트워크가 준비되면 실제 배포 상태와 외부 HTTPS·WebSocket을 검증한다. 브라우저 로그인만으로 API 인증이 제공된다고 가정하지 않는다. SQLite·전표·계정은 무료 서버 재시작·재배포 시 사라질 수 있으므로 예시 데이터만 사용한다. 백그라운드 위치는 별도 네이티브 기기 검증이 필요하다.
+현재 실행 환경에서 https://bareun-dispatch-test.onrender.com/api/health 의 HTTP 성공과 ok:true, service:bareun-dispatch를 확인했다. 공개 웹의 실제 JS 번들에 기사 PIN 보기 화면 코드도 포함되어 있다. 이 읽기 전용 확인과 로컬 APK 빌드에는 Render 관리 API 키가 필요 없다. Render 관리 API를 별도로 사용할 때만 보안 연결의 준비 상태를 확인하고 키를 출력하지 않는다. 브라우저 로그인만으로 API 인증이 제공된다고 가정하지 않는다. SQLite·전표·계정은 무료 서버 재시작·재배포 시 사라질 수 있으므로 예시 데이터만 사용한다. 백그라운드 위치는 별도 네이티브 기기 검증이 필요하다.
 
 앱 소스와 무료 배포 설정의 브랜치는 `codex/free-node-test`다. 사용자는 앱 전체 소스를 기존 `bobjjangs-glitch/-system` 저장소의 이 브랜치로 업로드해도 되는지 묻는 요청에 `업로드해줘`라고 명시적으로 승인했다. 이 범위의 승인을 반복해서 묻지 않는다. 기존 플랫폼 Git 인증을 사용해 해당 브랜치를 업로드하고, 원격 브랜치 커밋이 로컬 HEAD와 일치하는지 확인한다. GitHub 업로드와 Render 서버 배포는 별개로 검증한다.
 
@@ -111,6 +111,8 @@ Render Blueprint 생성 화면에서는 Blueprint Name `systemfile`, Branch `cod
 
 사용자가 APK·IPA 제작을 요청한 뒤 LDPlayer에 설치할 APK를 먼저 달라고 지정했다. 기본 작업은 LDPlayer 9의 64비트 Android를 위한 x86_64 테스트 APK다. 위 클라우드 AVD·개발 빌드·Metro 시작 절차는 별도의 개발 테스트 요청에 사용하며 이 목표를 위해 반복하지 않는다. 현재 API 주소는 https://bareun-dispatch-test.onrender.com 이다.
 
-`eas.json`의 `ldplayer` 프로필을 공식 eas-json 파서로 검증했고 현재 Android Hermes 번들 export도 통과했다. `bash scripts/build-ldplayer-apk.sh`는 release 모드로 JS를 포함하고, 실제 APK 생성·서명 검증이 성공한 경우에만 artifacts 폴더에 테스트 APK를 복사한다. 현재 생성된 APK는 없다. 번들·ZIP을 설치 파일로 잘못 제공하지 않는다.
+`eas.json`의 `ldplayer` 프로필을 공식 eas-json 파서로 검증했고 Android Hermes 번들 export도 통과했다. 네트워크 허용이 실행 환경에 반영된 뒤 `EXPO_PUBLIC_API_URL=https://bareun-dispatch-test.onrender.com BAREUN_GRADLE_WORKERS=2 bash scripts/build-ldplayer-apk.sh`가 성공했다. Gradle·Metro·C++ 작업 수 제한은 빌드 스크립트와 `deploy/android/ldplayer-resource-limits.gradle`에서 적용한다.
 
-공식 React Native release AAR 다운로드는 Maven Central에서 repo.reactnative.dev로 이동해 실행 환경의 CONNECT 403으로 막혔다. 도메인은 설정 초안에 있으나 실행 허용 목록에는 미적용이다. 접근 허용이 실제 반영된 뒤 로컬 APK 빌드를 이어서 실행한다. Gradle 캐시와 SDK를 보존하고 프록시·TLS·체크섬 검증을 우회하지 않는다. 로컬 Android 빌드에는 Expo 로그인이 필요 없다. `eas whoami`는 Not logged in을 반환했으므로 클라우드 빌드는 별도 인증이 필요하다. IPA는 Android 다음 순서이며 Apple Developer 계정과 등록 기기·서명이 필요하다.
+실제 설치 파일은 `/workspace/artifacts/bareun-dispatch-ldplayer-x86_64-test-0ee74c4.apk`(31,365,731바이트)이며 같은 경로의 `.apk.sha256` 체크섬도 생성했다. APK v2 서명, ZIP 무결성, 16KB 정렬, x86_64 구성, 내장 JS와 Render 주소, 체크섬 검증이 통과했다. 테스트 서명을 사용하며 LDPlayer 9 64비트용이다. ARM 휴대폰용 정식 배포 APK로 안내하지 않는다. Metro·Expo Go는 필요 없고 실제 LDPlayer 설치·실행 및 GPS 동작은 아직 확인하지 않았다. 상세 절차는 `docs/LDPLAYER_APK.md`를 따른다.
+
+Gradle 캐시와 SDK를 보존하고 프록시·TLS·체크섬 검증을 우회하지 않는다. 로컬 Android 빌드에는 Expo 로그인이 필요 없다. `eas whoami`는 Not logged in을 반환했으므로 클라우드 빌드는 별도 인증이 필요하다. IPA는 Android 다음 순서이며 Apple Developer 계정과 등록 기기·서명이 필요하다.

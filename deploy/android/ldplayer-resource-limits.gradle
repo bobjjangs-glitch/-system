@@ -1,0 +1,16 @@
+gradle.beforeProject { project ->
+    project.plugins.withId('com.facebook.react') {
+        project.extensions.getByName('react').extraPackagerArgs.addAll(['--max-workers', '2'])
+    }
+    ['com.android.application', 'com.android.library'].each { pluginId ->
+        project.plugins.withId(pluginId) {
+            project.extensions.getByName('androidComponents').finalizeDsl { android ->
+                android.defaultConfig.externalNativeBuild.cmake.arguments.addAll([
+                    '-DCMAKE_JOB_POOLS=bareun_compile=2;bareun_link=1',
+                    '-DCMAKE_JOB_POOL_COMPILE=bareun_compile',
+                    '-DCMAKE_JOB_POOL_LINK=bareun_link'
+                ])
+            }
+        }
+    }
+}
