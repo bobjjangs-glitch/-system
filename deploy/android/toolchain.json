@@ -1,0 +1,36 @@
+{
+  "jdks": [
+    {
+      "archive_url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz",
+      "checksum_url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz.sha256.txt",
+      "name": "OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz",
+      "major": 17,
+      "sha256": "8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711"
+    },
+    {
+      "archive_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+      "checksum_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sha256.txt",
+      "name": "OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+      "major": 21,
+      "sha256": "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c"
+    }
+  ],
+  "sdk_tools": {
+    "url": "https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip",
+    "checksum_type": "sha1",
+    "checksum": "e025545c62a8e64c7559119566a569fb1dec5f60",
+    "size": "181052239"
+  },
+  "packages": [
+    "platform-tools",
+    "platforms;android-36",
+    "build-tools;36.0.0",
+    "build-tools;35.0.0",
+    "ndk;27.1.12297006",
+    "cmake;3.22.1"
+  ],
+  "emulator_packages": [
+    "emulator",
+    "system-images;android-36;google_apis;x86_64"
+  ]
+}

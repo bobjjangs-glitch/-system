@@ -1,0 +1,21 @@
+# Test deployment only: SQLite and uploaded files are on an ephemeral filesystem.
+services:
+  - type: web
+    name: bareun-dispatch-test
+    runtime: node
+    plan: free
+    autoDeploy: false
+    buildCommand: bash deploy/render/build.sh
+    startCommand: bash deploy/render/start.sh
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: APP_DATA_DIR
+        value: /tmp/bareun-dispatch-test
+      - key: DISPATCH_BOOTSTRAP_TOKEN
+        generateValue: true
