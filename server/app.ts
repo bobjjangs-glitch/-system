@@ -294,6 +294,19 @@ export function createDispatchApp(
     res.json(store.company());
   });
   app.get("/api/drivers", admin, (_req, res) => res.json(store.drivers()));
+  app.get("/api/drivers/:id/pin", admin, (req, res) => {
+    res.set("Cache-Control", "no-store");
+    assert(
+      store.one(
+        "SELECT id FROM users WHERE id=? AND role=?",
+        req.params.id,
+        "driver",
+      ),
+      "기사를 찾을 수 없습니다.",
+      404,
+    );
+    res.json({ pin: store.driverPin(String(req.params.id)) });
+  });
   app.post("/api/drivers", admin, (req, res) => {
     const pin = pinValue(req.body.pin ?? String(randomInt(100000, 1000000)));
     assert(
@@ -317,7 +330,7 @@ export function createDispatchApp(
       capacity,
     );
     notify("changed");
-    res.status(201).json({ ...created, pin });
+    res.set("Cache-Control", "no-store").status(201).json({ ...created, pin });
   });
   app.patch("/api/drivers/:id", admin, (req, res) => {
     const existing = store.one(
@@ -386,22 +399,23 @@ export function createDispatchApp(
     );
     store.transaction(() => {
       store.run(
-        "UPDATE users SET pinIndex=?,pinHash=?,salt=? WHERE id=?",
+        "UPDATE users SET pinIndex=?,pinHash=?,salt=?,pinEncrypted=? WHERE id=?",
         p.pinIndex,
         p.pinHash,
         p.salt,
+        store.encryptDriverPin(user.id, pin),
         user.id,
       );
       store.run("DELETE FROM sessions WHERE userId=?", user.id);
     });
     for (const [ws, session] of connections)
       if (session.userId === user.id) ws.close(1008);
-    res.json({ pin });
+    res.set("Cache-Control", "no-store").json({ pin });
   });
   app.post("/api/demo", admin, (_req, res) => {
     const drivers = seedDemo(store);
     notify("changed");
-    res.status(201).json({ drivers, count: 25 });
+    res.set("Cache-Control", "no-store").status(201).json({ drivers, count: 25 });
   });
   app.post("/api/demo/clear", admin, (_req, res) => {
     assert(

@@ -91,6 +91,9 @@ import {
 } from "./src/ui";
 
 type Run = (fn: () => Promise<void>) => void;
+type SetupState = { required: boolean; bootstrapCodeRequired: boolean };
+const setupRequiredMessage =
+  "현재 서버에 관리자 계정이 없습니다. 첫 관리자 등록을 진행해 주세요.";
 type Position = {
   lat: number;
   lng: number;
@@ -178,14 +181,20 @@ function AppContent() {
     }
   };
   const refreshSetup = async () => {
-    const data = await api("/api/setup");
+    const data = await api<SetupState>("/api/setup");
     setSetup(data.required);
     setBootstrap(data.bootstrapCodeRequired);
+    return data;
   };
   useEffect(() => {
     onUnauthorized(() => {
       setUser(null);
       stopTracking();
+      refreshSetup()
+        .then((state) => {
+          if (state.required) setNotice(setupRequiredMessage);
+        })
+        .catch((error) => setNotice((error as Error).message));
     });
     (async () => {
       try {
@@ -255,7 +264,7 @@ function AppContent() {
           bootstrap={bootstrap}
           run={run}
           busy={busy}
-          retry={() => run(refreshSetup)}
+          refreshSetup={refreshSetup}
           onLogin={async (session) => {
             await saveSession(session);
             setUser(session.user);
@@ -286,14 +295,14 @@ function Login({
   run,
   busy,
   onLogin,
-  retry,
+  refreshSetup,
 }: {
   setup: boolean;
   bootstrap: boolean;
   run: Run;
   busy: boolean;
   onLogin: (session: any) => Promise<void>;
-  retry: () => void;
+  refreshSetup: () => Promise<SetupState>;
 }) {
   const [pin, setPin] = useState(""),
     [name, setName] = useState(""),
@@ -358,10 +367,25 @@ function Login({
             disabled={busy || pin.length < 6 || (setup && !name.trim())}
             onPress={() =>
               run(async () => {
-                const session = await post(
-                  setup ? "/api/setup" : "/api/login",
-                  { pin, name, bootstrapCode: code },
-                );
+                let session;
+                try {
+                  session = await post(
+                    setup ? "/api/setup" : "/api/login",
+                    { pin, name, bootstrapCode: code },
+                  );
+                } catch (error) {
+                  const state = await refreshSetup().catch(() => null);
+                  if (state && state.required !== setup) {
+                    setPin("");
+                    setCode("");
+                    throw new Error(
+                      state.required
+                        ? setupRequiredMessage
+                        : "관리자가 이미 등록되어 있습니다. 등록한 PIN으로 로그인해 주세요.",
+                    );
+                  }
+                  throw error;
+                }
                 await onLogin(session);
                 setPin("");
               })
@@ -378,7 +402,14 @@ function Login({
               : "PIN에 따라 관리자 또는 기사 화면으로 연결돼요."}
           </Text>
         </Card>
-        <Pressable onPress={retry} style={{ alignSelf: "center", padding: 12 }}>
+        <Pressable
+          onPress={() =>
+            run(async () => {
+              await refreshSetup();
+            })
+          }
+          style={{ alignSelf: "center", padding: 12 }}
+        >
           <Text style={s.muted}>연결 상태 다시 확인</Text>
         </Pressable>
         <View style={[s.row, { justifyContent: "center", marginTop: 20 }]}>
@@ -1315,6 +1346,26 @@ function Admin({
                     한 코스 최대 {driver.capacity}곳 · PIN은 안전하게 보관 중
                   </Text>
                 </View>
+                <View style={{ marginBottom: 10 }}>
+                  <Button
+                    title="PIN 보기"
+                    secondary
+                    small
+                    disabled={busy}
+                    onPress={() =>
+                      run(async () => {
+                        const result = await api<{ pin: string | null }>(
+                          "/api/drivers/" + driver.id + "/pin",
+                        );
+                        if (!result.pin)
+                          throw new Error(
+                            "아직 확인할 PIN 정보가 없습니다. 기사가 한 번 로그인한 뒤 다시 확인하거나 새 PIN을 발급해 주세요.",
+                          );
+                        setPins([{ name: driver.name, pin: result.pin }]);
+                      })
+                    }
+                  />
+                </View>
                 <View style={s.row}>
                   <View style={{ flex: 1 }}>
                     <Button
@@ -1949,30 +2000,29 @@ function Admin({
         )}
       </Sheet>
       <Sheet
-        title="기사 PIN 발급 완료"
+        title="기사 PIN 확인"
         visible={!!pins}
         onClose={() => setPins(null)}
       >
         <Text style={[s.muted, { marginBottom: 20 }]}>
-          이 화면에서만 새 PIN을 확인할 수 있어요. 해당 기사에게 안전하게 전달해
-          주세요. PIN 재발급 시 이전 로그인이 해제됩니다.
+          관리자만 기사 메뉴의 PIN 보기에서 다시 확인할 수 있어요. 해당 기사에게
+          개별 전달해 주세요. PIN 재발급 시 이전 로그인이 해제됩니다.
         </Text>
         {pins?.map((pin, i) => (
           <Card key={i}>
-            <View style={s.between}>
-              <Text style={s.h3}>{pin.name}</Text>
-              <Text
-                selectable
-                style={{
-                  fontSize: 25,
-                  fontWeight: "800",
-                  letterSpacing: 4,
-                  color: C.green,
-                }}
-              >
-                {pin.pin}
-              </Text>
-            </View>
+            <Text style={s.h3}>{pin.name}</Text>
+            <Text
+              selectable
+              style={{
+                marginTop: 10,
+                fontSize: 25,
+                fontWeight: "800",
+                letterSpacing: 2,
+                color: C.green,
+              }}
+            >
+              {pin.pin}
+            </Text>
           </Card>
         ))}
         <Button title="확인했어요" onPress={() => setPins(null)} />
