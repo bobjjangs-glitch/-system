@@ -6,6 +6,15 @@
       "distribution": "internal",
       "android": { "buildType": "apk" }
     },
+    "ldplayer": {
+      "extends": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://bareun-dispatch-test.onrender.com"
+      },
+      "android": {
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=x86_64"
+      }
+    },
     "internal": {
       "distribution": "internal",
       "android": { "buildType": "apk" },

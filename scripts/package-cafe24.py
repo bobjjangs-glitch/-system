@@ -14,7 +14,7 @@ selected = [
     "package.json", "package-lock.json", "App.tsx", "app.json", "eas.json",
     "tsconfig.json", ".env.example", ".gitignore", "README.md", "render.yaml",
     "src", "server", "deploy", "docs", "dist",
-    "scripts/install-cloud.sh", "scripts/package-cafe24.py", "scripts/cloud-android-env.sh", "scripts/setup-cloud-android.py",
+    "scripts/install-cloud.sh", "scripts/package-cafe24.py", "scripts/cloud-android-env.sh", "scripts/setup-cloud-android.py", "scripts/build-ldplayer-apk.sh",
 ]
 files = []
 for entry in selected:

@@ -106,3 +106,11 @@ EXPO_NO_TELEMETRY=1 EXPO_OFFLINE=1 CI=1 npm run export:mobile -- --output-dir /w
 앱 소스와 무료 배포 설정의 브랜치는 `codex/free-node-test`다. 사용자는 앱 전체 소스를 기존 `bobjjangs-glitch/-system` 저장소의 이 브랜치로 업로드해도 되는지 묻는 요청에 `업로드해줘`라고 명시적으로 승인했다. 이 범위의 승인을 반복해서 묻지 않는다. 기존 플랫폼 Git 인증을 사용해 해당 브랜치를 업로드하고, 원격 브랜치 커밋이 로컬 HEAD와 일치하는지 확인한다. GitHub 업로드와 Render 서버 배포는 별개로 검증한다.
 
 Render Blueprint 생성 화면에서는 Blueprint Name `systemfile`, Branch `codex/free-node-test`, Blueprint Path `render.yaml`을 사용한다. `main`의 README만 읽어서는 앱을 배포할 수 없다. 사용자가 Path에 `README.md`를 입력했을 때 `EOF` 오류가 났으므로 이 값을 배포 설정 파일 경로로 안내한다. 이 대화에는 열린 사용자 브라우저를 클릭하는 기능이 없으므로 브라우저 조작을 했다고 주장하지 않는다.
+
+## 최신 우선 목표: LDPlayer 설치용 APK
+
+사용자가 APK·IPA 제작을 요청한 뒤 LDPlayer에 설치할 APK를 먼저 달라고 지정했다. 기본 작업은 LDPlayer 9의 64비트 Android를 위한 x86_64 테스트 APK다. 위 클라우드 AVD·개발 빌드·Metro 시작 절차는 별도의 개발 테스트 요청에 사용하며 이 목표를 위해 반복하지 않는다. 현재 API 주소는 https://bareun-dispatch-test.onrender.com 이다.
+
+`eas.json`의 `ldplayer` 프로필을 공식 eas-json 파서로 검증했고 현재 Android Hermes 번들 export도 통과했다. `bash scripts/build-ldplayer-apk.sh`는 release 모드로 JS를 포함하고, 실제 APK 생성·서명 검증이 성공한 경우에만 artifacts 폴더에 테스트 APK를 복사한다. 현재 생성된 APK는 없다. 번들·ZIP을 설치 파일로 잘못 제공하지 않는다.
+
+공식 React Native release AAR 다운로드는 Maven Central에서 repo.reactnative.dev로 이동해 실행 환경의 CONNECT 403으로 막혔다. 도메인은 설정 초안에 있으나 실행 허용 목록에는 미적용이다. 접근 허용이 실제 반영된 뒤 로컬 APK 빌드를 이어서 실행한다. Gradle 캐시와 SDK를 보존하고 프록시·TLS·체크섬 검증을 우회하지 않는다. 로컬 Android 빌드에는 Expo 로그인이 필요 없다. `eas whoami`는 Not logged in을 반환했으므로 클라우드 빌드는 별도 인증이 필요하다. IPA는 Android 다음 순서이며 Apple Developer 계정과 등록 기기·서명이 필요하다.

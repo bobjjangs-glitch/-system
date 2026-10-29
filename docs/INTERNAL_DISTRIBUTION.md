@@ -7,10 +7,12 @@
 1. 직원 휴대폰에서 접근 가능한 HTTPS 서버와 영구 데이터 디스크를 준비합니다. 사외 배송 중에도 서버에 접속할 수 있어야 합니다. 회사망만 사용할 경우 직원 휴대폰에 회사 VPN 접근도 준비합니다.
 2. 서버의 `NODE_ENV=production`, `APP_DATA_DIR`, `DISPATCH_BOOTSTRAP_TOKEN`, 필요 시 `CORS_ORIGINS`를 보안 설정에서 공급합니다. 서버를 시작하고 첫 관리자를 등록합니다.
 3. Expo 계정을 만들거나 기존 계정으로 EAS CLI에 로그인하고 프로젝트를 연결합니다. 클라우드 개발 도구는 `/workspace/.expo-development/tools/node_modules/.bin/eas`에 설치됩니다.
-4. 앱 빌드 환경의 `EXPO_PUBLIC_API_URL`에 실제 HTTPS 서버 주소를 넣습니다. 이 주소는 비밀 키가 아니며 앱에 포함됩니다. 변경하면 앱을 다시 빌드해야 합니다.
+4. 앱 빌드 환경의 `EXPO_PUBLIC_API_URL`에 실제 HTTPS 서버 주소를 넣습니다. EAS 클라우드 빌드는 해당 빌드 프로필의 `env` 또는 EAS 환경 변수에도 이 값을 설정합니다. 개발 PC의 환경 변수만으로 원격 빌드에 전달됐다고 가정하지 않습니다. 이 주소는 비밀 키가 아니며 앱에 포함됩니다. 변경하면 앱을 다시 빌드해야 합니다.
 5. 앱 식별자 `com.bobjjang.bareundispatch`를 회사 계정에서 소유할 식별자로 확인합니다. 서명 키를 유지해야 이후 업데이트를 같은 앱 위에 설치할 수 있습니다.
 
 ## Android
+
+LDPlayer에서 먼저 설치·테스트할 경우 `docs/LDPLAYER_APK.md`의 x86_64 APK 절차를 사용합니다. `ldplayer` 프로필은 현재 Render 테스트 서버를 사용하며 직원 배포용 `internal` 프로필과 구분합니다.
 
 ```bash
 eas build --platform android --profile internal

@@ -9,6 +9,11 @@ web-build/
 expo-env.d.ts
 *.tsbuildinfo
 *.log
+*.apk
+*.aab
+*.ipa
+*.jks
+*.keystore
 /android/
 /ios/
 .DS_Store
