@@ -1,6 +1,11 @@
 gradle.beforeProject { project ->
     project.plugins.withId('com.facebook.react') {
-        project.extensions.getByName('react').extraPackagerArgs.addAll(['--max-workers', '2'])
+        project.extensions.getByName('react').extraPackagerArgs.addAll(['--max-workers', '2', '--reset-cache'])
+        project.tasks.configureEach { task ->
+            if (task.name == 'createBundleReleaseJsAndAssets') {
+                task.inputs.property('bareunPublicApiUrl', System.getenv('EXPO_PUBLIC_API_URL') ?: '')
+            }
+        }
     }
     ['com.android.application', 'com.android.library'].each { pluginId ->
         project.plugins.withId(pluginId) {

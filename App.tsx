@@ -17,6 +17,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
+import * as Notifications from "expo-notifications";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import * as Sharing from "expo-sharing";
@@ -78,7 +79,16 @@ import {
   stopTracking,
   trackingMode,
   restoreTrackingMode,
+  navigateCourse,
+  resumeCourseNotification,
 } from "./src/tracking";
+import {
+  configureDriverAutomation,
+  getDriverAutomation,
+  recordHandledStop,
+} from "./src/driverAutomation";
+import type { DriverAutomation } from "./src/driverAutomation";
+import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
 import RouteOverview from "./src/RouteOverview";
 import DeliveryItems, { CargoSummary } from "./src/DeliveryItems";
@@ -94,7 +104,7 @@ import {
   Sheet,
 } from "./src/ui";
 
-type Run = (fn: () => Promise<void>) => void;
+type Run = (fn: () => Promise<unknown>) => void;
 if (Platform.OS !== "web") {
   SplashScreen.setOptions({ duration: 400, fade: true });
   SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -194,6 +204,39 @@ function AppContent() {
     setBootstrap(data.bootstrapCodeRequired);
     return data;
   };
+  useEffect(() => {
+    consumeLocationRecovery()
+      .then((recovered) => {
+        if (recovered)
+          setNotice(
+            "이전 위치 공유 상태를 정리했습니다. 로그인과 코스는 유지됩니다. 위치 공유를 다시 켜 주세요.",
+          );
+      })
+      .catch(() => {});
+    if (Platform.OS === "web") return;
+    const handled = new Set<string>();
+    const handle = (response: Notifications.NotificationResponse | null) => {
+      if (!response) return;
+      const { identifier, content } = response.notification.request;
+      if (
+        handled.has(identifier) ||
+        content.data?.dispatchAction !== "continue-course" ||
+        typeof content.data.routeId !== "string"
+      )
+        return;
+      handled.add(identifier);
+      resumeCourseNotification(content.data.routeId).catch((error) =>
+        setNotice(error.message),
+      );
+      Notifications.clearLastNotificationResponseAsync().catch(() => {});
+    };
+    const listener =
+      Notifications.addNotificationResponseReceivedListener(handle);
+    Notifications.getLastNotificationResponseAsync()
+      .then(handle)
+      .catch(() => {});
+    return () => listener.remove();
+  }, []);
   useEffect(() => {
     onUnauthorized(() => {
       setUser(null);
@@ -420,6 +463,16 @@ function Login({
               : "PIN에 따라 관리자 또는 기사 화면으로 연결돼요."}
           </Text>
         </Card>
+        {Platform.OS !== "web" && (
+          <View style={{ marginBottom: 10 }}>
+            <Button
+              title="앱 오류 정보 공유"
+              secondary
+              small
+              onPress={() => run(shareNativeCrash)}
+            />
+          </View>
+        )}
         <Pressable
           onPress={() =>
             run(async () => {
@@ -2259,8 +2312,16 @@ function DriverApp({
     [mode, setMode] = useState<string>(trackingMode),
     [failed, setFailed] = useState<Shipment | null>(null),
     [overview, setOverview] = useState(false),
+    [automation, setAutomation] = useState<DriverAutomation | null>(null),
     [reason, setReason] = useState("");
-  const refresh = useCallback(async () => setData(await api("/api/me")), []);
+  const refresh = useCallback(async () => {
+    const [current, settings] = await Promise.all([
+      api<{ route: Route | null; company: Company }>("/api/me"),
+      getDriverAutomation(),
+    ]);
+    setData(current);
+    setAutomation(settings);
+  }, []);
   useEffect(() => {
     restoreTrackingMode()
       .then(setMode)
@@ -2303,6 +2364,25 @@ function DriverApp({
   const share = async () => {
     const result = await startTracking(tell);
     setMode(result);
+    return result;
+  };
+  const continuous =
+    !!automation && automation.routeId === route?.id && automation.continuous;
+  const automatic =
+    !!automation && automation.routeId === route?.id && automation.enabled;
+  const openCourse = async (current: Route, enableAutomatic = true) => {
+    const settings = await configureDriverAutomation(
+      current.id,
+      enableAutomatic,
+    );
+    setAutomation(settings);
+    const sharing = mode === "background" ? mode : await share();
+    if (Platform.OS !== "web" && sharing !== "background")
+      throw new Error(
+        "내비를 사용하는 동안 자동 완료하려면 위치 권한을 항상 허용하고 알림 권한을 켜 주세요.",
+      );
+    await navigateCourse(current);
+    setAutomation(await getDriverAutomation());
   };
   const openNext = async (current: Route) => {
     const upcoming = current.stops.find((s) => s.status === "assigned");
@@ -2321,7 +2401,11 @@ function DriverApp({
       setData({ ...data, route: updated });
       setFailed(null);
       setReason("");
-      await openNext(updated);
+      await recordHandledStop(updated.id, stop);
+      if (continuous) {
+        if (status === "failed" || automation?.segmentEndStopId === stop.id)
+          await navigateCourse(updated);
+      } else await openNext(updated);
     });
   return (
     <View style={{ flex: 1 }}>
@@ -2497,6 +2581,53 @@ function DriverApp({
                   disabled={busy}
                   onPress={() => run(share)}
                 />
+                <View style={{ marginTop: 14, gap: 10 }}>
+                  <Button
+                    title="네이버로 남은 코스 연속 안내"
+                    icon={Navigation}
+                    disabled={busy}
+                    onPress={() => run(() => openCourse(route, true))}
+                  />
+                  <View style={s.between}>
+                    <Text style={[s.h3, { flex: 1 }]}>
+                      GPS 도착 시 자동 배송 완료
+                    </Text>
+                    <Switch
+                      accessibilityLabel="GPS 도착 자동 완료"
+                      value={!!automatic}
+                      disabled={busy}
+                      onValueChange={(enabled) =>
+                        run(async () => {
+                          setAutomation(
+                            await configureDriverAutomation(route.id, enabled),
+                          );
+                          if (enabled && mode === "off") await share();
+                        })
+                      }
+                    />
+                  </View>
+                  <Text style={s.muted}>
+                    정확한 위치로 배송지 80m 이내에서 30초 이상 정차하면 현재
+                    배송지만 자동 완료합니다. 같은 장소의 다음 배송지는 확인 후
+                    수동 완료해 주세요.
+                  </Text>
+                  <Text style={[s.muted, { fontSize: 11 }]}>
+                    네이버 내비는 경유지 5곳까지 지원합니다. 긴 코스는 다음 구간
+                    알림을 눌러 이어서 안내합니다.
+                  </Text>
+                  {automation?.lastCompletion && (
+                    <Text style={[s.muted, { color: C.green }]}>
+                      최근 자동 완료: {automation.lastCompletion.sequence}번
+                      배송지
+                    </Text>
+                  )}
+                  <Button
+                    title="위치 공유 오류 정보 공유"
+                    secondary
+                    small
+                    onPress={() => run(shareNativeCrash)}
+                  />
+                </View>
               </Card>
             )}
             {route.status === "planned" && (
@@ -2508,11 +2639,12 @@ function DriverApp({
                   </Text>
                 </View>
                 <Text style={[s.muted, { marginTop: 10, marginBottom: 20 }]}>
-                  코스 출발을 누르면 운행을 시작하고 첫 배송지 길안내를 엽니다.
-                  위치 권한을 허용해 주세요.
+                  네이버 지도에 경유지를 묶어 전달하고 도착 시 자동 완료합니다.
+                  위치를 항상 허용하고 알림 권한을 켜 주세요. 5곳 이내 코스는
+                  회사 복귀까지 한 번에 안내합니다.
                 </Text>
                 <Button
-                  title="코스 출발 · 첫 배송지 길안내"
+                  title="코스 출발 · 네이버 연속 안내"
                   icon={Navigation}
                   disabled={busy}
                   onPress={() =>
@@ -2521,12 +2653,7 @@ function DriverApp({
                         "/api/driver/routes/" + route.id + "/start",
                       );
                       setData({ ...data, route: updated });
-                      try {
-                        await share();
-                      } catch (error) {
-                        tell((error as Error).message);
-                      }
-                      await openNext(updated);
+                      await openCourse(updated, true);
                     })
                   }
                 />
@@ -2605,7 +2732,9 @@ function DriverApp({
                     onPress={() => run(() => navigate(next as any, company))}
                   />
                   <Button
-                    title="배송 완료 · 다음 길안내"
+                    title={
+                      continuous ? "직접 배송 완료" : "배송 완료 · 다음 길안내"
+                    }
                     icon={Check}
                     disabled={busy}
                     onPress={() => complete(next)}

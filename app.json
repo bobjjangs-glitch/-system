@@ -2,7 +2,7 @@
   "expo": {
     "name": "바른배차",
     "slug": "bareun-dispatch",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "scheme": "bareundispatch",
@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "com.bobjjang.bareundispatch",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#153b36"
@@ -28,6 +28,7 @@
       "favicon": "./assets/icon.png"
     },
     "plugins": [
+      "./plugins/withLocationServiceSafety.cjs",
       [
         "expo-location",
         {
@@ -58,7 +59,8 @@
             "backgroundColor": "#153b36"
           }
         }
-      ]
+      ],
+      "expo-notifications"
     ],
     "icon": "./assets/icon.png"
   }
