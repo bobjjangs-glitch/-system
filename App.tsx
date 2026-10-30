@@ -12,9 +12,11 @@ import {
   View,
   useWindowDimensions,
   Switch,
+  Image,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import * as SplashScreen from "expo-splash-screen";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import * as Sharing from "expo-sharing";
@@ -78,6 +80,8 @@ import {
   restoreTrackingMode,
 } from "./src/tracking";
 import MapPanel from "./src/MapPanel";
+import RouteOverview from "./src/RouteOverview";
+import DeliveryItems, { CargoSummary } from "./src/DeliveryItems";
 import {
   Badge,
   Button,
@@ -91,6 +95,10 @@ import {
 } from "./src/ui";
 
 type Run = (fn: () => Promise<void>) => void;
+if (Platform.OS !== "web") {
+  SplashScreen.setOptions({ duration: 400, fade: true });
+  SplashScreen.preventAutoHideAsync().catch(() => {});
+}
 type SetupState = { required: boolean; bootstrapCodeRequired: boolean };
 const setupRequiredMessage =
   "현재 서버에 관리자 계정이 없습니다. 첫 관리자 등록을 진행해 주세요.";
@@ -284,7 +292,14 @@ function AppContent() {
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AppContent />
+      <View
+        style={{ flex: 1 }}
+        onLayout={() => {
+          if (Platform.OS !== "web") SplashScreen.hideAsync().catch(() => {});
+        }}
+      >
+        <AppContent />
+      </View>
     </SafeAreaProvider>
   );
 }
@@ -313,9 +328,11 @@ function Login({
       keyboardShouldPersistTaps="handled"
     >
       <View style={{ width: "100%", maxWidth: 430 }}>
-        <View style={st.logo}>
-          <Truck size={31} color={C.green} />
-        </View>
+        <Image
+          source={require("./assets/icon.png")}
+          accessibilityLabel="바른배차 로고"
+          style={{ width: 78, height: 78, borderRadius: 22 }}
+        />
         <Text style={[s.section, { marginTop: 25, color: C.green }]}>
           BAREUN DISPATCH
         </Text>
@@ -369,10 +386,11 @@ function Login({
               run(async () => {
                 let session;
                 try {
-                  session = await post(
-                    setup ? "/api/setup" : "/api/login",
-                    { pin, name, bootstrapCode: code },
-                  );
+                  session = await post(setup ? "/api/setup" : "/api/login", {
+                    pin,
+                    name,
+                    bootstrapCode: code,
+                  });
                 } catch (error) {
                   const state = await refreshSetup().catch(() => null);
                   if (state && state.required !== setup) {
@@ -2240,6 +2258,7 @@ function DriverApp({
     } | null>(null),
     [mode, setMode] = useState<string>(trackingMode),
     [failed, setFailed] = useState<Shipment | null>(null),
+    [overview, setOverview] = useState(false),
     [reason, setReason] = useState("");
   const refresh = useCallback(async () => setData(await api("/api/me")), []);
   useEffect(() => {
@@ -2263,6 +2282,16 @@ function DriverApp({
       }),
     [refresh],
   );
+  useEffect(() => {
+    if (
+      data &&
+      !["active", "returning"].includes(data.route?.status ?? "") &&
+      mode !== "off"
+    )
+      stopTracking()
+        .then(() => setMode("off"))
+        .catch(() => {});
+  }, [!!data, data?.route?.status, mode]);
   if (!data) return <Loading />;
   const route = data.route,
     company = route?.company ?? data.company,
@@ -2402,10 +2431,25 @@ function DriverApp({
                   : "도로 기준 예상 · 배송지 체류 포함, 실시간 교통 미반영"}
               </Text>
             </Card>
+            <CargoSummary stops={route.stops} />
+            <Text style={[s.h3, { marginBottom: 10 }]}>전체 경로 미리보기</Text>
             <MapPanel
-              data={{ company, routes: [route], drivers: [] }}
-              height={235}
+              data={{
+                company,
+                routes: [route],
+                drivers: [],
+                nextStopId: next?.id,
+              }}
+              height={280}
             />
+            <View style={{ marginTop: 10 }}>
+              <Button
+                title="전체 경로 크게 보기"
+                secondary
+                icon={RouteIcon}
+                onPress={() => setOverview(true)}
+              />
+            </View>
             <View style={[s.between, { marginTop: 17, marginBottom: 9 }]}>
               <Text style={s.h3}>
                 완료 {completed} / {route.stops.length}곳
@@ -2549,19 +2593,7 @@ function DriverApp({
                   </Pressable>
                 )}
                 <View style={s.divider} />
-                {next.items.map((item, i) => (
-                  <View key={i} style={[s.between, { paddingVertical: 6 }]}>
-                    <View style={s.row}>
-                      <Package size={16} color={C.green} />
-                      <Text style={{ color: C.ink, fontSize: 14 }}>
-                        {item.name}
-                      </Text>
-                    </View>
-                    <Text style={{ fontWeight: "800", color: C.green }}>
-                      {item.quantity}개
-                    </Text>
-                  </View>
-                ))}
+                <DeliveryItems items={next.items} />
                 {next.notes && (
                   <Text style={[s.muted, { marginTop: 13 }]}>{next.notes}</Text>
                 )}
@@ -2649,16 +2681,9 @@ function DriverApp({
                     <Text style={[s.muted, { marginTop: 5 }]}>
                       {stop.address}
                     </Text>
-                    <Text
-                      style={[
-                        s.muted,
-                        { fontSize: 10, color: C.green, marginTop: 5 },
-                      ]}
-                    >
-                      {stop.items
-                        .map((i) => `${i.name} ${i.quantity}개`)
-                        .join(" · ")}
-                    </Text>
+                    <View style={{ marginTop: 9 }}>
+                      <DeliveryItems items={stop.items} compact />
+                    </View>
                   </View>
                 </View>
               ))}
@@ -2670,6 +2695,13 @@ function DriverApp({
           </>
         )}
       </ScrollView>
+      {route && (
+        <RouteOverview
+          route={route}
+          visible={overview}
+          onClose={() => setOverview(false)}
+        />
+      )}
       <Sheet
         title="미배송 사유 기록"
         visible={!!failed}

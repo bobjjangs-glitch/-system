@@ -116,3 +116,11 @@ Render Blueprint 생성 화면에서는 Blueprint Name `systemfile`, Branch `cod
 실제 설치 파일은 `/workspace/artifacts/bareun-dispatch-ldplayer-x86_64-test-0ee74c4.apk`(31,365,731바이트)이며 같은 경로의 `.apk.sha256` 체크섬도 생성했다. APK v2 서명, ZIP 무결성, 16KB 정렬, x86_64 구성, 내장 JS와 Render 주소, 체크섬 검증이 통과했다. 테스트 서명을 사용하며 LDPlayer 9 64비트용이다. ARM 휴대폰용 정식 배포 APK로 안내하지 않는다. Metro·Expo Go는 필요 없고 실제 LDPlayer 설치·실행 및 GPS 동작은 아직 확인하지 않았다. 상세 절차는 `docs/LDPLAYER_APK.md`를 따른다.
 
 Gradle 캐시와 SDK를 보존하고 프록시·TLS·체크섬 검증을 우회하지 않는다. 로컬 Android 빌드에는 Expo 로그인이 필요 없다. `eas whoami`는 Not logged in을 반환했으므로 클라우드 빌드는 별도 인증이 필요하다. IPA는 Android 다음 순서이며 Apple Developer 계정과 등록 기기·서명이 필요하다.
+
+## 후속 업데이트: 전체 경로·브랜딩·기사 물품·위치 검토
+
+사용자가 LDPlayer 실행을 확인한 뒤 전체 코스를 한 번에 보는 기능, 아이콘과 시작 로딩 화면, 관리자 위치 공유 검토, 기사별 배송 품목·수량 표시를 요청했다. `docs/DRIVER_UPDATES.md`를 따른다. 새 앱 버전은 1.1.0(2)다. 지도 화면은 APK 내부의 `src/mapDocument.ts`에 포함하고 기존 서버의 Leaflet 파일을 읽는다. 새 APK를 기존 앱에 덮어 설치하며 서버 계정·전표를 초기화하지 않는다.
+
+`expo-splash-screen`을 npm으로 설치하고 Android clean prebuild를 다시 수행했다. 기존 테스트 서명 키는 체크아웃 밖 `/workspace/.expo-development/signing/ldplayer-debug.keystore`에 보존했다. 생성 폴더를 다시 지우기 전 서명 키와 사용자 변경을 보존한다. 재생성 후 공식 Gradle 체크섬과 SDK 설정을 `scripts/setup-cloud-android.py`로 적용한다. 키 파일을 Git에 넣거나 내용을 출력하지 않는다.
+
+로컬 브라우저 검증용 웹 빌드는 `.env.local`의 공개 Render 주소와 환경 변수 변환 캐시를 분리해야 한다. 같은 출처의 임시 API를 사용할 때 `env -u EXPO_PUBLIC_API_URL EXPO_NO_DOTENV=1 EXPO_NO_TELEMETRY=1 EXPO_OFFLINE=1 CI=1 npm run export:web -- --clear`를 사용한다. Android APK는 빌드 명령에 Render 주소를 명시한다. 브라우저 임시 좌표와 WebSocket 검증을 실기기 GPS·백그라운드 검증으로 취급하지 않는다.

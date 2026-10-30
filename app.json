@@ -2,7 +2,7 @@
   "expo": {
     "name": "바른배차",
     "slug": "bareun-dispatch",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "scheme": "bareundispatch",
@@ -14,8 +14,19 @@
         "LSApplicationQueriesSchemes": ["kakaomap", "nmap"]
       }
     },
-    "android": { "package": "com.bobjjang.bareundispatch" },
-    "web": { "bundler": "metro", "output": "single" },
+    "android": {
+      "package": "com.bobjjang.bareundispatch",
+      "versionCode": 2,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#153b36"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/icon.png"
+    },
     "plugins": [
       [
         "expo-location",
@@ -35,7 +46,20 @@
           "microphonePermission": false
         }
       ],
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/icon.png",
+          "imageWidth": 180,
+          "backgroundColor": "#153b36",
+          "dark": {
+            "image": "./assets/icon.png",
+            "backgroundColor": "#153b36"
+          }
+        }
+      ]
+    ],
+    "icon": "./assets/icon.png"
   }
 }

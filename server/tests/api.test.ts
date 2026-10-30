@@ -359,6 +359,69 @@ test(
       assert.equal(live.event, "position");
       assert.equal(live.driverId, d1.id);
       assert.equal(live.position.lat, 36.334);
+      const older = await call(
+        "/api/driver/location",
+        {
+          ...location,
+          lat: 36.31,
+          recordedAt: new Date(
+            Date.parse(location.recordedAt) - 1000,
+          ).toISOString(),
+        },
+        token1,
+      );
+      assert.equal(older.status, 200);
+      assert.equal(
+        older.data.ignored,
+        true,
+        "지연 도착한 좌표가 최신 위치를 덮어쓰지 않음",
+      );
+      const secondRoute = planned.data.find((r: any) => r.driverId === d2.id);
+      assert.equal(
+        (
+          await call(
+            "/api/driver/routes/" + secondRoute.id + "/start",
+            {},
+            token2,
+          )
+        ).status,
+        200,
+      );
+      assert.equal(
+        (
+          await call(
+            "/api/driver/location",
+            {
+              ...location,
+              lat: 36.37,
+              lng: 127.39,
+              recordedAt: new Date().toISOString(),
+            },
+            token2,
+          )
+        ).status,
+        200,
+      );
+      const positions = (await call("/api/dashboard")).data.drivers;
+      assert.equal(
+        positions.find((d: any) => d.id === d1.id).position.lat,
+        location.lat,
+      );
+      assert.equal(
+        positions.find((d: any) => d.id === d1.id).position.routeId,
+        route.id,
+      );
+      assert.equal(
+        positions.find((d: any) => d.id === d2.id).position.lat,
+        36.37,
+        "동시에 운행하는 기사별 위치를 분리해서 보존함",
+      );
+      const own = (await call("/api/me", undefined, token1)).data.route;
+      assert.deepEqual(
+        own.stops.map((s: any) => s.items),
+        route.stops.map((s: any) => s.items),
+        "기사에게 배정된 배송지의 물품명과 수량이 그대로 제공됨",
+      );
       const stale = {
         ...location,
         recordedAt: new Date(Date.now() - 3600000).toISOString(),

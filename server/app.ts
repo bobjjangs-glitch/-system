@@ -7,8 +7,7 @@ import multer from "multer";
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { resolve, join, basename, extname, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve, join, basename, extname } from "node:path";
 import { randomInt, createHmac, timingSafeEqual } from "node:crypto";
 import ExcelJS from "exceljs";
 import { Store, id, today } from "./database.ts";
@@ -23,6 +22,7 @@ import {
 } from "./imports.ts";
 import { geocode } from "./geocoding.ts";
 import { seedDemo } from "./demo.ts";
+import { createMapDocument } from "../src/mapDocument.ts";
 
 type AuthRequest = Request & { user: Session; token: string };
 class AppError extends Error {
@@ -54,7 +54,6 @@ function pinValue(value: unknown): string {
   );
   return value;
 }
-const sourceDir = dirname(fileURLToPath(import.meta.url));
 
 export function createDispatchApp(
   options: { dataDir?: string; roadRouting?: boolean; test?: boolean } = {},
@@ -330,7 +329,10 @@ export function createDispatchApp(
       capacity,
     );
     notify("changed");
-    res.set("Cache-Control", "no-store").status(201).json({ ...created, pin });
+    res
+      .set("Cache-Control", "no-store")
+      .status(201)
+      .json({ ...created, pin });
   });
   app.patch("/api/drivers/:id", admin, (req, res) => {
     const existing = store.one(
@@ -415,7 +417,10 @@ export function createDispatchApp(
   app.post("/api/demo", admin, (_req, res) => {
     const drivers = seedDemo(store);
     notify("changed");
-    res.set("Cache-Control", "no-store").status(201).json({ drivers, count: 25 });
+    res
+      .set("Cache-Control", "no-store")
+      .status(201)
+      .json({ drivers, count: 25 });
   });
   app.post("/api/demo/clear", admin, (_req, res) => {
     assert(
@@ -1142,7 +1147,7 @@ export function createDispatchApp(
     "/leaflet",
     express.static(resolve("node_modules/leaflet/dist"), { maxAge: "1d" }),
   );
-  app.get("/map", (_req, res) => res.sendFile(join(sourceDir, "map.html")));
+  app.get("/map", (_req, res) => res.type("html").send(createMapDocument()));
   if (existsSync(resolve("dist/index.html"))) {
     app.use(express.static(resolve("dist")));
     app.get("/{*path}", (_req, res) =>

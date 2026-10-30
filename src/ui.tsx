@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import {
   Text,
   View,
@@ -8,6 +8,10 @@ import {
   Modal,
   ScrollView,
   ActivityIndicator,
+  AccessibilityInfo,
+  Animated,
+  Image,
+  Platform,
 } from "react-native";
 import { X, ArrowRight } from "lucide-react-native";
 export const C = {
@@ -235,17 +239,85 @@ export function Sheet({
   );
 }
 export function Loading() {
+  const pulse = useRef(new Animated.Value(0.5)).current;
+  useEffect(() => {
+    let cancelled = false;
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 1100,
+          useNativeDriver: Platform.OS !== "web",
+        }),
+        Animated.timing(pulse, {
+          toValue: 0.5,
+          duration: 1100,
+          useNativeDriver: Platform.OS !== "web",
+        }),
+      ]),
+    );
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((reduced) => {
+        if (!cancelled && !reduced) animation.start();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      animation.stop();
+    };
+  }, [pulse]);
   return (
     <View
       style={{
         flex: 1,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: C.bg,
+        backgroundColor: "#153b36",
       }}
     >
-      <ActivityIndicator color={C.green} size="large" />
-      <Text style={[s.muted, { marginTop: 18 }]}>배송을 준비하고 있어요</Text>
+      <Image
+        source={require("../assets/icon.png")}
+        accessibilityLabel="바른배차 배송 차량 로고"
+        style={{ width: 164, height: 164, borderRadius: 38, marginBottom: 25 }}
+      />
+      <Text
+        style={{
+          color: "#c9ef8b",
+          fontSize: 10,
+          fontWeight: "700",
+          letterSpacing: 4,
+        }}
+      >
+        BAREUN DISPATCH
+      </Text>
+      <Text
+        style={{
+          color: "#fffdf1",
+          fontSize: 36,
+          fontWeight: "800",
+          letterSpacing: -1,
+          marginTop: 10,
+        }}
+      >
+        바른배차
+      </Text>
+      <Text style={{ color: "#bed1c9", fontSize: 13, marginTop: 12 }}>
+        오늘의 배송을, 바른 순서로.
+      </Text>
+      <Animated.View
+        style={{
+          opacity: pulse,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 10,
+          marginTop: 42,
+        }}
+      >
+        <ActivityIndicator color="#c9ef8b" size="small" />
+        <Text style={{ color: "#d5e4dc", fontSize: 12 }}>
+          배송 정보를 준비하고 있어요
+        </Text>
+      </Animated.View>
     </View>
   );
 }

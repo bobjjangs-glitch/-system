@@ -1,12 +1,16 @@
 import React, { useEffect, useRef } from "react";
 import { View } from "react-native";
 import { API_URL } from "./api";
+import { createMapDocument } from "./mapDocument";
+const mapHtml = createMapDocument(API_URL);
 export default function MapPanel({
   data,
   height = 280,
+  fill = false,
 }: {
   data: any;
   height?: number;
+  fill?: boolean;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const latest = useRef(data);
@@ -14,13 +18,14 @@ export default function MapPanel({
   const send = () =>
     ref.current?.contentWindow?.postMessage(
       { type: "dispatch-map", payload: latest.current },
-      new URL(API_URL).origin,
+      window.location.origin,
     );
   useEffect(send, [data]);
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (
-        e.origin === new URL(API_URL).origin &&
+        e.source === ref.current?.contentWindow &&
+        e.origin === window.location.origin &&
         e.data === "dispatch-map-ready"
       )
         send();
@@ -31,7 +36,7 @@ export default function MapPanel({
   return (
     <View
       style={{
-        height,
+        ...(fill ? { flex: 1 } : { height }),
         borderRadius: 20,
         overflow: "hidden",
         backgroundColor: "#e8efed",
@@ -40,7 +45,7 @@ export default function MapPanel({
       <iframe
         title="배송 경로와 기사 위치"
         ref={ref}
-        src={API_URL + "/map"}
+        srcDoc={mapHtml}
         onLoad={send}
         style={{ border: 0, width: "100%", height: "100%" }}
       />
