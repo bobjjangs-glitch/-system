@@ -124,3 +124,7 @@ Gradle 캐시와 SDK를 보존하고 프록시·TLS·체크섬 검증을 우회�
 `expo-splash-screen`을 npm으로 설치하고 Android clean prebuild를 다시 수행했다. 기존 테스트 서명 키는 체크아웃 밖 `/workspace/.expo-development/signing/ldplayer-debug.keystore`에 보존했다. 생성 폴더를 다시 지우기 전 서명 키와 사용자 변경을 보존한다. 재생성 후 공식 Gradle 체크섬과 SDK 설정을 `scripts/setup-cloud-android.py`로 적용한다. 키 파일을 Git에 넣거나 내용을 출력하지 않는다.
 
 로컬 브라우저 검증용 웹 빌드는 `.env.local`의 공개 Render 주소와 환경 변수 변환 캐시를 분리해야 한다. 같은 출처의 임시 API를 사용할 때 `env -u EXPO_PUBLIC_API_URL EXPO_NO_DOTENV=1 EXPO_NO_TELEMETRY=1 EXPO_OFFLINE=1 CI=1 npm run export:web -- --clear`를 사용한다. Android APK는 빌드 명령에 Render 주소를 명시한다. 브라우저 임시 좌표와 WebSocket 검증을 실기기 GPS·백그라운드 검증으로 취급하지 않는다.
+
+## 후속 요청: 실제 Android 휴대폰용 APK
+
+사용자가 LDPlayer용 다음으로 실제 Android 휴대폰에 설치할 APK를 요청했다. `docs/ANDROID_PHONE_APK.md`와 `scripts/build-android-phone-apk.sh`를 따른다. ARM 64비트·32비트가 함께 포함된 APK를 기존 앱 버전 1.1.0(2), 기존 테스트 인증서, 현재 Render API 주소로 빌드한다. 앱 소스·네이티브 설정·의존성 변경이 없는 ABI 선택만을 위해 clean prebuild나 전체 앱 테스트를 반복하지 않는다. 실제 산출물의 서명·버전·아키텍처·내장 번들·아이콘·시작 화면·ZIP 무결성·정렬을 확인한다. 기존 인증서를 유지하며 키를 출력하거나 Git에 넣지 않는다. 실제 휴대폰 설치와 GPS 동작은 검증하지 않은 경우 완료했다고 주장하지 않는다.

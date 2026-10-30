@@ -14,13 +14,15 @@
 
 LDPlayer에서 먼저 설치·테스트할 경우 `docs/LDPLAYER_APK.md`의 x86_64 APK 절차를 사용합니다. `ldplayer` 프로필은 현재 Render 테스트 서버를 사용하며 직원 배포용 `internal` 프로필과 구분합니다.
 
+실제 Android 휴대폰의 내부 테스트에는 [ANDROID_PHONE_APK.md](ANDROID_PHONE_APK.md)를 따릅니다. `bash scripts/build-android-phone-apk.sh`로 ARM 64비트·32비트를 포함한 설치 파일을 로컬에서 만들 수 있으며 이 경로에는 Expo 로그인이 필요 없습니다. 기존 테스트 인증서와 현재 Render 테스트 서버를 사용합니다.
+
 ```bash
 eas build --platform android --profile internal
 ```
 
 `internal` 프로필은 AAB 대신 APK를 생성합니다. EAS의 Android 서명 키 관리 절차를 완료한 뒤 빌드 결과의 설치 링크 또는 APK를 직원에게만 전달합니다. 직원은 해당 다운로드 출처의 앱 설치를 허용한 후 설치합니다. Google Play 등록은 필요 없습니다.
 
-서명 키는 Expo 계정에서 안전하게 관리·백업하고 업데이트마다 같은 키를 사용합니다. 현재 이 작업에서는 Expo 계정에 로그인하거나 서명된 APK를 생성하지 않았습니다.
+회사 운영용 서명 키는 Expo 계정 등 소유자가 관리하는 보안 저장소에 백업하고 업데이트마다 같은 키를 사용합니다. 현재 Expo 계정 로그인은 수행하지 않았으며, 로컬에서는 기존 테스트 인증서를 사용한 설치용 APK를 생성합니다. 설치 파일 전달과 실제 휴대폰 GPS 검증은 별개입니다.
 
 ## iPhone — Apple Developer 계정이 아직 없는 경우
 
