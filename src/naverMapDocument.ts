@@ -49,7 +49,7 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
     if(failed)return;
     resize();if(failed||!map||!points.length)return;
     try{
-      map.fitBounds(points.map(coordinate),{top:65,right:35,bottom:35,left:35});
+      map.fitBounds(points.map(coordinate),{top:90,right:35,bottom:35,left:35});
       if(map.getZoom()>14)map.setZoom(14,false);
     }catch(_){error('네이버 지도 인증을 확인해 주세요. Key ID와 Web 서비스 URL 설정을 확인한 뒤 다시 열어 주세요.');}
   }
@@ -129,7 +129,7 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
     if(map||failed)return;
     try{
       maps=window.naver.maps;
-      map=new maps.Map('map',{center:new maps.LatLng(36.3504,127.3848),zoom:12,minZoom:5,maxZoom:20,zoomControl:true,zoomControlOptions:{position:maps.Position.BOTTOM_RIGHT}});
+      map=new maps.Map('map',{center:new maps.LatLng(36.3504,127.3848),zoom:12,minZoom:5,maxZoom:20,zoomControl:true,zoomControlOptions:{position:maps.Position.TOP_RIGHT,style:maps.ZoomControlStyle.SMALL}});
       maps.Event.once(map,'tilesloaded',function(){
         clearTimeout(timer);document.documentElement.dataset.mapReady='true';
         document.getElementById('map-loading').style.display='none';
