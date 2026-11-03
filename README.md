@@ -1,8 +1,9 @@
-# Android 1.4.0 설치 파일
+# Android 1.4.0 다운로드
 
-회사 내부 테스트용 APK입니다. 기존 앱 위에 설치할 수 있으며 회사에서 부여한 PIN으로 로그인해야 배송 데이터에 접근할 수 있습니다.
+- [설치용 APK](bareun-dispatch-1.4.0.apk): Android 7.0 이상 ARM64·ARM32용, 기존 앱 위에 설치.
+- [갤럭시 A16용 압축 파일](bareun-a16.zip): ARM64 전용. 압축을 풀고 APK를 설치.
 
-- 소스: bobjjangs-glitch/-system 커밋 674e42b
-- 버전: 1.4.0(9), Android 7.0 이상 ARM64·ARM32
-- 한국어 OCR 모델 포함
-- SHA-256: 1b0ae72b3f631fb77de32da19e61cb359ee4fdb3caf7e019b18fda3ff2821913
+버전 1.4.0(9), 한국어 기기 OCR 모델 포함. 앱 사용과 배송 데이터 접근에는 회사에서 부여한 PIN 로그인이 필요합니다.
+
+소스 커밋: 674e42b
+APK SHA-256은 .sha256 파일에서 확인할 수 있습니다.
