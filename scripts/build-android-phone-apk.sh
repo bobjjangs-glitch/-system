@@ -16,6 +16,8 @@ export NODE_ENV=production
 export EXPO_OFFLINE=1
 export EXPO_NO_TELEMETRY=1
 export CI=1
+# Fail before compiling if dependency installation skipped the native safety patch.
+npx --no-install patch-package --error-on-fail
 bareun_workers="${BAREUN_GRADLE_WORKERS:-2}"
 if [[ ! "$bareun_workers" =~ ^[1-4]$ ]]; then
   printf '%s\n' 'BAREUN_GRADLE_WORKERS must be between 1 and 4.' >&2
@@ -29,6 +31,7 @@ bash android/gradlew -p android -I "$PWD/deploy/android/ldplayer-resource-limits
   --build-cache --console=plain "$@"
 
 bareun_apk=android/app/build/outputs/apk/release/app-release.apk
+python3 scripts/verify-location-service-apk.py "$bareun_apk"
 "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$bareun_apk"
 "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$bareun_apk"
 python3 - "$bareun_apk" <<'PY'

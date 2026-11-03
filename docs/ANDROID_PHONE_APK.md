@@ -11,7 +11,7 @@ EXPO_PUBLIC_API_URL=https://bareun-dispatch-test.onrender.com bash scripts/build
 
 이전 Android 생성 프로젝트와 캐시를 재사용한다. 네이티브 의존성이나 앱 설정이 바뀌지 않았으면 ARM 타깃으로 빌드하기 위해 clean prebuild를 반복하지 않는다. 실제 네이티브 변경으로 재생성이 필요하면 기존 서명 키·사용자 변경을 보존한 뒤 재생성하고 `scripts/setup-cloud-android.py`로 SDK·공식 Gradle 체크섬을 적용한다.
 
-스크립트는 release 모드로 JavaScript를 내장한다. APK 서명·16KB ZIP 정렬·ZIP 무결성·두 ARM 아키텍처·내장 번들을 확인한 후 `/workspace/artifacts/bareun-dispatch-android-phone-arm-test-<커밋>.apk`와 `.apk.sha256`을 만든다. 기존 LDPlayer 테스트 APK와 같은 인증서를 유지하는 내부 테스트용 빌드다. 회사 운영용 서명 키를 사용하는 정식 배포 절차는 `INTERNAL_DISTRIBUTION.md`를 따른다.
+스크립트는 release 모드로 JavaScript를 내장한다. APK 서명·16KB ZIP 정렬·ZIP 무결성·두 ARM 아키텍처·내장 번들·위치 서비스의 네이티브 수정 포함 여부를 확인한 후 `/workspace/artifacts/bareun-dispatch-android-phone-arm-test-<커밋>.apk`와 `.apk.sha256`을 만든다. 기존 LDPlayer 테스트 APK와 같은 인증서를 유지하는 내부 테스트용 빌드다. 회사 운영용 서명 키를 사용하는 정식 배포 절차는 `INTERNAL_DISTRIBUTION.md`를 따른다.
 
 ## 휴대폰 설치
 

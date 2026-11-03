@@ -1,0 +1,234 @@
+diff --git a/node_modules/expo-location/android/src/main/java/expo/modules/location/LocationModule.kt b/node_modules/expo-location/android/src/main/java/expo/modules/location/LocationModule.kt
+index b286ea2..53e9452 100644
+--- a/node_modules/expo-location/android/src/main/java/expo/modules/location/LocationModule.kt
++++ b/node_modules/expo-location/android/src/main/java/expo/modules/location/LocationModule.kt
+@@ -64,6 +64,7 @@ import expo.modules.location.records.ReverseGeocodeLocation
+ import expo.modules.location.records.ReverseGeocodeResponse
+ import expo.modules.location.taskConsumers.GeofencingTaskConsumer
+ import expo.modules.location.taskConsumers.LocationTaskConsumer
++import expo.modules.location.services.LocationTaskService
+ import java.util.Locale
+ import kotlin.coroutines.resume
+ import kotlin.coroutines.resumeWithException
+@@ -344,6 +345,10 @@ class LocationModule : Module(), SensorEventListener, ActivityEventListener {
+       return@AsyncFunction mTaskManager.taskHasConsumerOfClass(taskName, LocationTaskConsumer::class.java)
+     }
+ 
++    AsyncFunction("getForegroundServiceStatusAsync") { taskName: String ->
++      LocationTaskService.getStatus(taskName)
++    }
++
+     AsyncFunction("startGeofencingAsync") { taskName: String, options: GeofencingOptions ->
+       if (isMissingBackgroundPermissions()) {
+         throw LocationBackgroundUnauthorizedException()
+diff --git a/node_modules/expo-location/android/src/main/java/expo/modules/location/services/LocationTaskService.kt b/node_modules/expo-location/android/src/main/java/expo/modules/location/services/LocationTaskService.kt
+index 0019485..fad4ec1 100644
+--- a/node_modules/expo-location/android/src/main/java/expo/modules/location/services/LocationTaskService.kt
++++ b/node_modules/expo-location/android/src/main/java/expo/modules/location/services/LocationTaskService.kt
+@@ -14,11 +14,15 @@ import android.os.Binder
+ import android.os.Build
+ import android.os.Bundle
+ import android.os.IBinder
++import android.util.Log
++import java.io.File
++import java.util.concurrent.ConcurrentHashMap
+ 
+ class LocationTaskService : Service() {
+   private var mChannelId: String? = null
+   private var mKillService = false
+   private lateinit var mParentContext: Context
++  private var mTaskName: String? = null
+   private val mServiceId = sServiceId++
+   private val mBinder: IBinder = ServiceBinder()
+ 
+@@ -27,18 +31,33 @@ class LocationTaskService : Service() {
+       get() = this@LocationTaskService
+   }
+ 
++  override fun onCreate() {
++    super.onCreate()
++    mParentContext = applicationContext
++  }
++
+   override fun onBind(intent: Intent): IBinder {
+     return mBinder
+   }
+ 
+   @TargetApi(26)
+-  override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
+-    val extras = intent.extras
+-    if (extras != null) {
+-      mChannelId = extras.getString("appId") + ":" + extras.getString("taskName")
+-      mKillService = extras.getBoolean("killService", false)
++  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++    val extras = intent?.extras ?: run {
++      stopSelf()
++      return START_NOT_STICKY
+     }
+-    return START_REDELIVER_INTENT
++    mTaskName = extras.getString("taskName")
++    val options = extras.getBundle(SERVICE_OPTIONS_KEY)
++    if (mTaskName == null || options == null) {
++      stopSelf()
++      return START_NOT_STICKY
++    }
++    mChannelId = extras.getString("appId") + ":" + mTaskName
++    mKillService = extras.getBoolean("killService", false)
++    // Promote in the service lifecycle itself, before a delayed bind callback.
++    startForeground(options)
++    // Requiring a new user action is safer than replaying a failed start at boot.
++    return START_NOT_STICKY
+   }
+ 
+   fun setParentContext(context: Context) {
+@@ -48,10 +67,16 @@ class LocationTaskService : Service() {
+   }
+ 
+   fun stop() {
++    if (!getStatus(mTaskName).startsWith("failed:")) updateStatus(mTaskName, "stopped")
+     stopForeground(true)
+     stopSelf()
+   }
+ 
++  override fun onDestroy() {
++    if (!getStatus(mTaskName).startsWith("failed:")) updateStatus(mTaskName, "stopped")
++    super.onDestroy()
++  }
++
+   override fun onTaskRemoved(rootIntent: Intent) {
+     if (mKillService) {
+       super.onTaskRemoved(rootIntent)
+@@ -60,8 +85,22 @@ class LocationTaskService : Service() {
+   }
+ 
+   fun startForeground(serviceOptions: Bundle) {
+-    val notification = buildServiceNotification(serviceOptions)
+-    startForeground(mServiceId, notification)
++    try {
++      val notification = buildServiceNotification(serviceOptions)
++      startForeground(mServiceId, notification)
++      updateStatus(mTaskName, "running")
++    } catch (error: RuntimeException) {
++      // This executes on Android's main thread, outside the JS promise's catch.
++      updateStatus(mTaskName, "failed:" + error.javaClass.simpleName)
++      Log.w("LocationTaskService", "Foreground location service could not start", error)
++      runCatching {
++        File(filesDir, "dispatch-native-crash.txt").writeText(
++          "Handled location service start failure / Android " + Build.VERSION.RELEASE + " / " + Build.MODEL + "\n" +
++            error.stackTraceToString().take(10000)
++        )
++      }
++      stopSelf()
++    }
+   }
+ 
+   //region private
+@@ -143,6 +182,12 @@ class LocationTaskService : Service() {
+   } //endregion
+ 
+   companion object {
++    const val SERVICE_OPTIONS_KEY = "expo.modules.location.serviceOptions"
++    private val serviceStates = ConcurrentHashMap<String, String>()
++    fun getStatus(taskName: String?): String = taskName?.let { serviceStates[it] } ?: "stopped"
++    fun updateStatus(taskName: String?, state: String) {
++      if (taskName != null) serviceStates[taskName] = state
++    }
+     private var sServiceId = 481756
+     const val META_DATA_FOREGROUND_SERVICE_ICON_KEY: String =
+       "expo.modules.location.foreground_service_icon"
+diff --git a/node_modules/expo-location/android/src/main/java/expo/modules/location/taskConsumers/LocationTaskConsumer.kt b/node_modules/expo-location/android/src/main/java/expo/modules/location/taskConsumers/LocationTaskConsumer.kt
+index 915b6bf..8004781 100644
+--- a/node_modules/expo-location/android/src/main/java/expo/modules/location/taskConsumers/LocationTaskConsumer.kt
++++ b/node_modules/expo-location/android/src/main/java/expo/modules/location/taskConsumers/LocationTaskConsumer.kt
+@@ -37,6 +37,7 @@ class LocationTaskConsumer(context: Context, taskManagerUtils: TaskManagerUtilsI
+   private var mTask: TaskInterface? = null
+   private var mPendingIntent: PendingIntent? = null
+   private var mService: LocationTaskService? = null
++  private var mServiceConnection: ServiceConnection? = null
+   private var mLocationRequest: LocationRequest? = null
+   private var mLastReportedLocation: Location? = null
+   private var mDeferredDistance = 0.0
+@@ -172,7 +173,8 @@ class LocationTaskConsumer(context: Context, taskManagerUtils: TaskManagerUtilsI
+ 
+   private fun stopLocationUpdates() {
+     mPendingIntent?.let {
+-      mLocationClient.removeLocationUpdates(it)
++      runCatching { mLocationClient.removeLocationUpdates(it) }
++        .onFailure { error -> Log.w(TAG, "Could not remove location updates", error) }
+       it.cancel()
+     }
+   }
+@@ -205,7 +207,7 @@ class LocationTaskConsumer(context: Context, taskManagerUtils: TaskManagerUtilsI
+     }
+ 
+     // Foreground service is requested but not running.
+-    if (mService == null) {
++    if (mService == null && mServiceConnection == null) {
+       val serviceIntent = Intent(context, LocationTaskService::class.java)
+       val extras = Bundle()
+       val serviceOptions = options.getArguments(FOREGROUND_SERVICE_KEY).toBundle()
+@@ -214,26 +216,32 @@ class LocationTaskConsumer(context: Context, taskManagerUtils: TaskManagerUtilsI
+       extras.putString("appId", task.appScopeKey)
+       extras.putString("taskName", task.name)
+       extras.putBoolean("killService", serviceOptions.getBoolean("killServiceOnDestroy", false))
++      extras.putBundle(LocationTaskService.SERVICE_OPTIONS_KEY, serviceOptions)
+       serviceIntent.putExtras(extras)
+-      context.startForegroundService(serviceIntent)
+-      context.bindService(
+-        serviceIntent,
+-        object : ServiceConnection {
++      val connection = object : ServiceConnection {
+           override fun onServiceConnected(name: ComponentName, service: IBinder) {
++            // Stop/logout can win the race while Android is binding the service.
++            if (mServiceConnection !== this || mTask == null) return
+             mService = (service as? ServiceBinder)?.service
+-            mService?.let {
+-              it.setParentContext(context)
+-              it.startForeground(serviceOptions)
+-            }
++            mService?.setParentContext(context)
+           }
+ 
+           override fun onServiceDisconnected(name: ComponentName) {
+-            mService?.stop()
+-            mService = null
++            if (mServiceConnection === this) stopForegroundService()
+           }
+-        },
+-        Context.BIND_AUTO_CREATE
+-      )
++        }
++      mServiceConnection = connection
++      LocationTaskService.updateStatus(task.name, "starting")
++      try {
++        context.startForegroundService(serviceIntent)
++        if (!context.bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)) {
++          throw IllegalStateException("Location service binding was rejected")
++        }
++      } catch (error: RuntimeException) {
++        stopForegroundService()
++        LocationTaskService.updateStatus(task.name, "failed:" + error.javaClass.simpleName)
++        throw error
++      }
+     } else {
+       // Restart the service with new service options.
+       mService?.startForeground(options.getArguments(FOREGROUND_SERVICE_KEY).toBundle())
+@@ -241,7 +249,17 @@ class LocationTaskConsumer(context: Context, taskManagerUtils: TaskManagerUtilsI
+   }
+ 
+   private fun stopForegroundService() {
+-    mService?.stop()
++    val connection = mServiceConnection
++    mServiceConnection = null
++    val service = mService
++    mService = null
++    service?.stop()
++    if (connection != null) {
++      runCatching { context.unbindService(connection) }
++      runCatching { context.stopService(Intent(context, LocationTaskService::class.java)) }
++    }
++    if (!LocationTaskService.getStatus(mTask?.name).startsWith("failed:"))
++      LocationTaskService.updateStatus(mTask?.name, "stopped")
+   }
+ 
+   /**

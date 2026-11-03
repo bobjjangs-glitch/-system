@@ -1,0 +1,19 @@
+// Native regression tests run on the JVM; these dependencies are never packaged in the APK.
+gradle.beforeProject { project ->
+    project.plugins.withId('com.android.application') {
+        def android = project.extensions.getByName('android')
+        android.sourceSets.getByName('test').java.srcDir(new File(project.rootDir.parentFile, 'native-tests'))
+        android.testOptions.unitTests.includeAndroidResources = true
+        project.dependencies.add('testImplementation', 'junit:junit:4.13.2')
+        project.dependencies.add('testImplementation', 'org.robolectric:robolectric:4.16.1')
+        project.tasks.withType(Test).configureEach {
+            maxParallelForks = 1
+            maxHeapSize = '2g'
+            systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
+            ['http.proxyHost', 'http.proxyPort', 'https.proxyHost', 'https.proxyPort', 'http.nonProxyHosts', 'javax.net.ssl.trustStore'].each { key ->
+                if (System.getProperty(key) != null) systemProperty key, System.getProperty(key)
+            }
+            testLogging { events 'passed', 'failed', 'skipped' }
+        }
+    }
+}

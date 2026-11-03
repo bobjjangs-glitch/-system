@@ -1,9 +1,11 @@
 import { Platform, Linking, AppState } from "react-native";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
+import { requireOptionalNativeModule } from "expo";
 import { api, getSession, restoreSession } from "./api";
 import type { Company, Point, Route } from "../server/types";
 import { buildCourseNavigation } from "./courseNavigation";
+import { waitForLocationService } from "./locationServiceState";
 import {
   clearDriverAutomation,
   configureDriverAutomation,
@@ -18,12 +20,28 @@ let foreground: Location.LocationSubscription | undefined;
 let starting: Promise<"foreground" | "background"> | undefined;
 let trackingGeneration = 0;
 export let trackingMode: "off" | "foreground" | "background" = "off";
+function androidService() {
+  if (Platform.OS !== "android" || Number(Platform.Version) < 26) return null;
+  const module = requireOptionalNativeModule<{
+    getForegroundServiceStatusAsync?: (name: string) => Promise<string>;
+  }>("ExpoLocation");
+  if (!module?.getForegroundServiceStatusAsync)
+    throw new Error("위치 공유 안정화 기능이 포함된 최신 APK로 업데이트해 주세요.");
+  return () => module.getForegroundServiceStatusAsync!(TASK);
+}
 export async function restoreTrackingMode() {
+  // Returning from a permission dialog must not cancel an in-flight start.
+  if (starting) return trackingMode;
   if (Platform.OS !== "web")
     try {
-      if (await Location.hasStartedLocationUpdatesAsync(TASK))
-        trackingMode = "background";
-    } catch {}
+      if (await Location.hasStartedLocationUpdatesAsync(TASK)) {
+        const probe = androidService();
+        if (probe && (await probe()) !== "running") await stopTracking(false);
+        else trackingMode = "background";
+      } else if (!foreground) trackingMode = "off";
+    } catch {
+      if (!foreground) trackingMode = "off";
+    }
   return trackingMode;
 }
 if (Platform.OS !== "web" && !TaskManager.isTaskDefined(LEGACY_TASK))
@@ -39,16 +57,27 @@ if (Platform.OS !== "web" && !TaskManager.isTaskDefined(TASK))
     const locations = (
       data as { locations: Location.LocationObject[] } | undefined
     )?.locations;
-    const location = locations?.at(-1);
+    const location = Array.isArray(locations) ? locations.at(-1) : null;
     if (!location) return;
     try {
-      if ((await handleDriverLocation(locationPayload(location), true)).stop)
+      const point = locationPayload(location);
+      if (point && (await handleDriverLocation(point, true)).stop)
         await stopTracking();
     } catch {
       /* A later location update retries after connectivity resumes. */
     }
   });
 function locationPayload(location: Location.LocationObject) {
+  if (
+    !location?.coords ||
+    !Number.isFinite(location.timestamp) ||
+    !Number.isFinite(location.coords.latitude) ||
+    !Number.isFinite(location.coords.longitude) ||
+    Math.abs(location.coords.latitude) > 90 ||
+    Math.abs(location.coords.longitude) > 180 ||
+    !Number.isFinite(new Date(location.timestamp).getTime())
+  )
+    return null;
   return {
     lat: location.coords.latitude,
     lng: location.coords.longitude,
@@ -102,26 +131,41 @@ async function startTrackingInternal(
       );
   };
   await foregroundReady();
+  if (!(await Location.hasServicesEnabledAsync()))
+    throw new Error("휴대폰 설정에서 위치 기능을 켠 뒤 다시 눌러 주세요.");
   const permission = await Location.requestForegroundPermissionsAsync();
   if (permission.status !== "granted")
     throw new Error(
       "위치 권한을 허용하면 배송 중 위치를 공유할 수 있습니다. 설정에서 위치 권한을 확인해 주세요.",
     );
   assertCurrent();
-  foreground = await Location.watchPositionAsync(
+  const watcher = await Location.watchPositionAsync(
     {
       accuracy: Location.Accuracy.High,
       distanceInterval: 0,
       timeInterval: 10000,
+      mayShowUserSettingsDialog: false,
     },
     (location) => {
-      handleDriverLocation(locationPayload(location))
+      if (trackingGeneration !== expectedGeneration) return;
+      const point = locationPayload(location);
+      if (!point) return;
+      handleDriverLocation(point)
         .then((result) => {
-          if (result.stop) return stopTracking();
+          if (result.stop && trackingGeneration === expectedGeneration)
+            return stopTracking();
         })
         .catch((error) => onError(error.message));
     },
+    (reason) => onError("위치를 확인하지 못했습니다. " + reason),
   );
+  try {
+    assertCurrent();
+  } catch (error) {
+    watcher.remove();
+    throw error;
+  }
+  foreground = watcher;
   trackingMode = "foreground";
   if (Platform.OS !== "web" && (await TaskManager.isAvailableAsync())) {
     try {
@@ -150,8 +194,8 @@ async function startTrackingInternal(
             killServiceOnDestroy: true,
           },
         });
-        // Keep the activity and foreground watcher alive while the service binds.
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const probe = androidService();
+        if (probe) await waitForLocationService(probe, assertCurrent);
         assertCurrent();
         if (!(await Location.hasStartedLocationUpdatesAsync(TASK)))
           throw new Error("백그라운드 위치 공유를 시작하지 못했습니다.");
@@ -161,6 +205,7 @@ async function startTrackingInternal(
         return trackingMode;
       }
     } catch (error) {
+      if (trackingGeneration !== expectedGeneration) throw error;
       await TaskManager.unregisterTaskAsync(TASK).catch(() => {});
       onError(
         "백그라운드 위치 공유를 준비하지 못해 앱을 열어 둔 동안만 공유합니다. " +

@@ -16,6 +16,7 @@ export NODE_ENV=production
 export EXPO_OFFLINE=1
 export EXPO_NO_TELEMETRY=1
 export CI=1
+npx --no-install patch-package --error-on-fail
 bareun_workers="${BAREUN_GRADLE_WORKERS:-2}"
 if [[ ! "$bareun_workers" =~ ^[1-4]$ ]]; then
   printf '%s\n' 'BAREUN_GRADLE_WORKERS must be between 1 and 4.' >&2
@@ -33,6 +34,7 @@ if [[ ! -f "$bareun_apk" ]]; then
   printf '%s\n' 'Gradle did not produce the expected signed test APK.' >&2
   exit 1
 fi
+python3 scripts/verify-location-service-apk.py "$bareun_apk"
 "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$bareun_apk"
 bareun_output_dir="${BAREUN_APK_OUTPUT_DIR:-/workspace/artifacts}"
 mkdir -p "$bareun_output_dir"

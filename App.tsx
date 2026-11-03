@@ -240,7 +240,7 @@ function AppContent() {
   useEffect(() => {
     onUnauthorized(() => {
       setUser(null);
-      stopTracking();
+      stopTracking().catch(() => {});
       refreshSetup()
         .then((state) => {
           if (state.required) setNotice(setupRequiredMessage);
@@ -2329,7 +2329,10 @@ function DriverApp({
     refresh().catch((e) => tell(e.message));
     const interval = setInterval(() => refresh().catch(() => {}), 15000);
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") refresh().catch(() => {});
+      if (state === "active") {
+        refresh().catch(() => {});
+        restoreTrackingMode().then(setMode).catch(() => {});
+      }
     });
     return () => {
       clearInterval(interval);
@@ -2362,9 +2365,11 @@ function DriverApp({
       route?.stops.filter((s) => s.status === "delivered").length ?? 0,
     active = !!route && ["active", "returning"].includes(route.status);
   const share = async () => {
-    const result = await startTracking(tell);
-    setMode(result);
-    return result;
+    try {
+      return await startTracking(tell);
+    } finally {
+      setMode(trackingMode);
+    }
   };
   const continuous =
     !!automation && automation.routeId === route?.id && automation.continuous;
@@ -2376,7 +2381,8 @@ function DriverApp({
       enableAutomatic,
     );
     setAutomation(settings);
-    const sharing = mode === "background" ? mode : await share();
+    const actualMode = await restoreTrackingMode();
+    const sharing = actualMode === "background" ? actualMode : await share();
     if (Platform.OS !== "web" && sharing !== "background")
       throw new Error(
         "내비를 사용하는 동안 자동 완료하려면 위치 권한을 항상 허용하고 알림 권한을 켜 주세요.",

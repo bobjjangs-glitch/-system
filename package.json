@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p server/tsconfig.json",
     "test": "node --experimental-strip-types --test --test-concurrency=1 server/tests/*.test.ts",
     "export:mobile": "expo export --platform android --platform ios --max-workers 2",
-    "export:web": "expo export --platform web --max-workers 2"
+    "export:web": "expo export --platform web --max-workers 2",
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
     "@tesseract.js-data/eng": "1.0.0",
@@ -31,7 +32,7 @@
     "expo-document-picker": "~57.0.3",
     "expo-file-system": "~57.0.7",
     "expo-image-picker": "~57.0.20",
-    "expo-location": "~57.0.22",
+    "expo-location": "57.0.22",
     "expo-notifications": "~57.0.24",
     "expo-secure-store": "~57.0.4",
     "expo-sharing": "~57.0.24",
@@ -45,6 +46,7 @@
     "leaflet": "^1.9.4",
     "lucide-react-native": "^0.577.0",
     "multer": "^2.1.1",
+    "patch-package": "8.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
@@ -63,5 +65,14 @@
     "@types/react": "~19.2.2",
     "@types/ws": "^8.18.1",
     "typescript": "~6.0.3"
+  },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-location"
+        ]
+      }
+    }
   }
 }
