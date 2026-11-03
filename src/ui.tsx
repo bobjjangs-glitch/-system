@@ -12,6 +12,7 @@ import {
   Animated,
   Image,
   Platform,
+  type TextInputProps,
 } from "react-native";
 import { X, ArrowRight } from "lucide-react-native";
 export const C = {
@@ -86,6 +87,8 @@ export function Field({
   secure = false,
   autoCapitalize,
   autoCorrect,
+  onFocus,
+  inputStyle,
 }: {
   label: string;
   value: string;
@@ -96,6 +99,8 @@ export function Field({
   secure?: boolean;
   autoCapitalize?: "none" | "sentences" | "words" | "characters";
   autoCorrect?: boolean;
+  onFocus?: TextInputProps["onFocus"];
+  inputStyle?: TextInputProps["style"];
 }) {
   return (
     <View style={{ gap: 7, marginBottom: 13 }}>
@@ -111,9 +116,11 @@ export function Field({
         multiline={multiline}
         autoCapitalize={autoCapitalize}
         autoCorrect={autoCorrect}
+        onFocus={onFocus}
         style={[
           s.input,
           multiline && { minHeight: 76, textAlignVertical: "top" },
+          inputStyle,
         ]}
       />
     </View>

@@ -13,6 +13,7 @@ import {
   useWindowDimensions,
   Switch,
   Image,
+  Keyboard,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -91,6 +92,7 @@ import {
 import type { DriverAutomation } from "./src/driverAutomation";
 import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
+import KeyboardViewport from "./src/KeyboardViewport";
 import RouteOverview from "./src/RouteOverview";
 import AdminMapOverview, { MAP_ROUTE_COLORS } from "./src/AdminMapOverview";
 import DeliveryItems, { CargoSummary } from "./src/DeliveryItems";
@@ -189,7 +191,8 @@ function AppContent() {
     [setup, setSetup] = useState(false),
     [bootstrap, setBootstrap] = useState(false),
     [notice, setNotice] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [loginEditing, setLoginEditing] = useState(false);
   const run: Run = async (fn) => {
     setBusy(true);
     setNotice("");
@@ -273,66 +276,82 @@ function AppContent() {
       } finally {
         await saveSession(null);
         setUser(null);
+        setLoginEditing(false);
       }
     });
   if (loading) return <Loading />;
   return (
-    <SafeAreaView
-      style={{ flex: 1, backgroundColor: C.bg }}
-      edges={["top", "left", "right"]}
+    <KeyboardViewport
+      enabled={!user}
+      onKeyboardShow={() => setLoginEditing(true)}
+      onKeyboardHide={() => setLoginEditing(false)}
     >
-      <StatusBar style="dark" />
-      {notice ? (
-        <Pressable
-          accessibilityLabel="알림 닫기"
-          onPress={() => setNotice("")}
-          style={st.notice}
-        >
-          <Text style={{ color: C.red, fontSize: 13, flex: 1, lineHeight: 20 }}>
-            {notice}
-          </Text>
-          <X color={C.red} size={17} />
-        </Pressable>
-      ) : null}
-      {user ? (
-        user.role === "admin" ? (
-          <Admin
-            user={user}
-            logout={logout}
-            run={run}
-            busy={busy}
-            tell={setNotice}
-          />
+      <SafeAreaView
+        style={{ flex: 1, backgroundColor: C.bg }}
+        edges={["top", "left", "right"]}
+      >
+        <StatusBar style="dark" />
+        {notice ? (
+          <Pressable
+            accessibilityLabel="알림 닫기"
+            onPress={() => setNotice("")}
+            style={st.notice}
+          >
+            <Text
+              style={{ color: C.red, fontSize: 13, flex: 1, lineHeight: 20 }}
+            >
+              {notice}
+            </Text>
+            <X color={C.red} size={17} />
+          </Pressable>
+        ) : null}
+        {user ? (
+          user.role === "admin" ? (
+            <Admin
+              user={user}
+              logout={logout}
+              run={run}
+              busy={busy}
+              tell={setNotice}
+            />
+          ) : (
+            <DriverApp
+              user={user}
+              logout={logout}
+              run={run}
+              busy={busy}
+              tell={setNotice}
+            />
+          )
         ) : (
-          <DriverApp
-            user={user}
-            logout={logout}
+          <Login
+            editing={loginEditing}
+            onInputFocus={() => setLoginEditing(true)}
+            onDismissKeyboard={() => {
+              Keyboard.dismiss();
+              setLoginEditing(false);
+            }}
+            setup={setup}
+            bootstrap={bootstrap}
             run={run}
             busy={busy}
-            tell={setNotice}
+            refreshSetup={refreshSetup}
+            onLogin={async (session) => {
+              await saveSession(session);
+              setUser(session.user);
+              setSetup(false);
+              setLoginEditing(false);
+            }}
           />
-        )
-      ) : (
-        <Login
-          setup={setup}
-          bootstrap={bootstrap}
-          run={run}
-          busy={busy}
-          refreshSetup={refreshSetup}
-          onLogin={async (session) => {
-            await saveSession(session);
-            setUser(session.user);
-            setSetup(false);
-          }}
-        />
-      )}
-      {busy && (
-        <View pointerEvents="none" style={st.busy}>
-          <ActivityIndicator size="small" color={C.green} />
-          <Text style={[s.muted, { color: C.green }]}>처리 중이에요…</Text>
-        </View>
-      )}
-    </SafeAreaView>
+        )}
+        {busy && (
+          <View pointerEvents="none" style={st.busy}>
+            <ActivityIndicator size="small" color={C.green} />
+            <Text style={[s.muted, { color: C.green }]}>처리 중이에요…</Text>
+          </View>
+        )}
+      </SafeAreaView>
+    </KeyboardViewport>
   );
 }
 export default function App() {
@@ -351,6 +370,9 @@ export default function App() {
 }
 
 function Login({
+  editing,
+  onInputFocus,
+  onDismissKeyboard,
   setup,
   bootstrap,
   run,
@@ -358,6 +380,9 @@ function Login({
   onLogin,
   refreshSetup,
 }: {
+  editing: boolean;
+  onInputFocus: () => void;
+  onDismissKeyboard: () => void;
   setup: boolean;
   bootstrap: boolean;
   run: Run;
@@ -370,29 +395,59 @@ function Login({
     [code, setCode] = useState("");
   return (
     <ScrollView
-      contentContainerStyle={st.login}
+      style={{ flex: 1 }}
+      contentContainerStyle={[st.login, editing && st.loginEditing]}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "none"}
     >
       <View style={{ width: "100%", maxWidth: 430 }}>
-        <Image
-          source={require("./assets/icon.png")}
-          accessibilityLabel="바른배차 로고"
-          style={{ width: 78, height: 78, borderRadius: 22 }}
-        />
-        <Text style={[s.section, { marginTop: 25, color: C.green }]}>
-          BAREUN DISPATCH
-        </Text>
-        <Text
-          style={[s.h1, { fontSize: 37, lineHeight: 47, marginBottom: 13 }]}
-        >
-          하루의 배송을,{`\n`}바른 순서로.
-        </Text>
-        <Text
-          style={[s.muted, { fontSize: 14, lineHeight: 23, marginBottom: 33 }]}
-        >
-          전표부터 배차, 배송과 회사 복귀까지{`\n`}모두 한 곳에서 간편하게
-          관리하세요.
-        </Text>
+        <View style={[s.row, editing && { marginBottom: 16 }]}>
+          <Image
+            source={require("./assets/icon.png")}
+            accessibilityLabel="바른배차 로고"
+            style={
+              editing
+                ? { width: 38, height: 38, borderRadius: 11 }
+                : { width: 78, height: 78, borderRadius: 22 }
+            }
+          />
+          {editing && (
+            <>
+              <Text style={[s.h2, { flex: 1 }]}>바른배차</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="키보드 닫기"
+                onPress={onDismissKeyboard}
+                style={{ padding: 10 }}
+              >
+                <Text style={{ color: C.green, fontSize: 13 }}>
+                  키보드 닫기
+                </Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+        {!editing && (
+          <>
+            <Text style={[s.section, { marginTop: 25, color: C.green }]}>
+              BAREUN DISPATCH
+            </Text>
+            <Text
+              style={[s.h1, { fontSize: 37, lineHeight: 47, marginBottom: 13 }]}
+            >
+              하루의 배송을,{`\n`}바른 순서로.
+            </Text>
+            <Text
+              style={[
+                s.muted,
+                { fontSize: 14, lineHeight: 23, marginBottom: 33 },
+              ]}
+            >
+              전표부터 배차, 배송과 회사 복귀까지{`\n`}모두 한 곳에서 간편하게
+              관리하세요.
+            </Text>
+          </>
+        )}
         <Card>
           <View style={[s.row, { marginBottom: 22 }]}>
             <ShieldCheck size={22} color={C.green} />
@@ -406,6 +461,8 @@ function Login({
               value={name}
               onChangeText={setName}
               placeholder="관리자 이름을 입력해 주세요"
+              onFocus={onInputFocus}
+              inputStyle={{ fontSize: 16 }}
             />
           )}
           <Field
@@ -415,6 +472,8 @@ function Login({
             placeholder="숫자 6~12자리"
             numeric
             secure
+            onFocus={onInputFocus}
+            inputStyle={{ fontSize: 16 }}
           />
           {setup && bootstrap && (
             <Field
@@ -422,6 +481,8 @@ function Login({
               value={code}
               onChangeText={setCode}
               secure
+              onFocus={onInputFocus}
+              inputStyle={{ fontSize: 16 }}
             />
           )}
           <Button
@@ -450,6 +511,7 @@ function Login({
                   }
                   throw error;
                 }
+                Keyboard.dismiss();
                 await onLogin(session);
                 setPin("");
               })
@@ -680,7 +742,10 @@ function Admin({
     }
   };
   if (!data) return <Loading />;
-  const coloredRoutes = data.routes.map((route, index) => ({ ...route, color: MAP_ROUTE_COLORS[index % MAP_ROUTE_COLORS.length] }));
+  const coloredRoutes = data.routes.map((route, index) => ({
+    ...route,
+    color: MAP_ROUTE_COLORS[index % MAP_ROUTE_COLORS.length],
+  }));
   const shownRoutes = selectedDriver
     ? coloredRoutes.filter((r) => r.driverId === selectedDriver)
     : coloredRoutes;
@@ -854,8 +919,20 @@ function Admin({
               height={width > 650 ? 350 : 290}
             />
             <View style={[s.row, { marginTop: 12, flexWrap: "wrap" }]}>
-              <Button title="전체 운행 지도 크게 보기" secondary small icon={Navigation} onPress={() => setMapOverview(true)} />
-              <Button title="네이버 지도 설정" secondary small icon={Settings2} onPress={openMapSettings} />
+              <Button
+                title="전체 운행 지도 크게 보기"
+                secondary
+                small
+                icon={Navigation}
+                onPress={() => setMapOverview(true)}
+              />
+              <Button
+                title="네이버 지도 설정"
+                secondary
+                small
+                icon={Settings2}
+                onPress={openMapSettings}
+              />
             </View>
             <Text
               style={[
@@ -1870,22 +1947,67 @@ function Admin({
         data={adminMapData}
         onClose={() => setMapOverview(false)}
         onConfigure={openMapSettings}
-        onAllDrivers={selectedDriver ? () => setSelectedDriver(null) : undefined}
+        onAllDrivers={
+          selectedDriver ? () => setSelectedDriver(null) : undefined
+        }
       />
-      <Sheet title="네이버 지도 설정" visible={!!mapSettings} onClose={() => setMapSettings(null)}>
-        {mapSettings && <>
-          <Field label="네이버 지도 Key ID" value={mapSettings.naverKeyId} placeholder="웹 지도용 Key ID" autoCapitalize="none" autoCorrect={false} onChangeText={(naverKeyId) => setMapSettings({ naverKeyId })} />
-          <Text style={[s.muted, { marginBottom: 15 }]}>네이버 Cloud Maps Application의 웹 지도용 Key ID를 입력해 주세요. Dynamic Map을 활성화하고 Web 서비스 URL에 현재 서버 주소를 등록해야 합니다.</Text>
-          <Text selectable style={[s.muted, { marginBottom: 15 }]}>{API_URL}</Text>
-          <Button title="네이버 Cloud Application 열기" secondary onPress={() => Linking.openURL("https://console.ncloud.com/maps/application")} />
-          <Text style={[s.muted, { marginVertical: 15 }]}>지도 설정은 운행 중에도 변경할 수 있으며 배차와 배송 내역은 유지됩니다.</Text>
-          {!data.mapSettings && <Text style={[s.muted, { marginBottom: 15 }]}>현재 서버에는 지도 설정 기능이 없습니다. 최신 서버 버전을 배포한 뒤 저장해 주세요.</Text>}
-          <Button title="지도 설정 저장" icon={Check} disabled={busy || !data.mapSettings} onPress={() => run(async () => {
-            await api("/api/map-settings", { method: "PUT", body: JSON.stringify(mapSettings) });
-            setMapSettings(null);
-            await refresh();
-          })} />
-        </>}
+      <Sheet
+        title="네이버 지도 설정"
+        visible={!!mapSettings}
+        onClose={() => setMapSettings(null)}
+      >
+        {mapSettings && (
+          <>
+            <Field
+              label="네이버 지도 Key ID"
+              value={mapSettings.naverKeyId}
+              placeholder="웹 지도용 Key ID"
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={(naverKeyId) => setMapSettings({ naverKeyId })}
+            />
+            <Text style={[s.muted, { marginBottom: 15 }]}>
+              네이버 Cloud Maps Application의 웹 지도용 Key ID를 입력해 주세요.
+              Dynamic Map을 활성화하고 Web 서비스 URL에 현재 서버 주소를
+              등록해야 합니다.
+            </Text>
+            <Text selectable style={[s.muted, { marginBottom: 15 }]}>
+              {API_URL}
+            </Text>
+            <Button
+              title="네이버 Cloud Application 열기"
+              secondary
+              onPress={() =>
+                Linking.openURL("https://console.ncloud.com/maps/application")
+              }
+            />
+            <Text style={[s.muted, { marginVertical: 15 }]}>
+              지도 설정은 운행 중에도 변경할 수 있으며 배차와 배송 내역은
+              유지됩니다.
+            </Text>
+            {!data.mapSettings && (
+              <Text style={[s.muted, { marginBottom: 15 }]}>
+                현재 서버에는 지도 설정 기능이 없습니다. 최신 서버 버전을 배포한
+                뒤 저장해 주세요.
+              </Text>
+            )}
+            <Button
+              title="지도 설정 저장"
+              icon={Check}
+              disabled={busy || !data.mapSettings}
+              onPress={() =>
+                run(async () => {
+                  await api("/api/map-settings", {
+                    method: "PUT",
+                    body: JSON.stringify(mapSettings),
+                  });
+                  setMapSettings(null);
+                  await refresh();
+                })
+              }
+            />
+          </>
+        )}
       </Sheet>
       <Sheet
         title="회사 · 배송 설정"
@@ -2370,7 +2492,9 @@ function DriverApp({
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") {
         refresh().catch(() => {});
-        restoreTrackingMode().then(setMode).catch(() => {});
+        restoreTrackingMode()
+          .then(setMode)
+          .catch(() => {});
       }
     });
     return () => {
@@ -2910,6 +3034,11 @@ const st = StyleSheet.create({
     justifyContent: "center",
     padding: 25,
     paddingVertical: 45,
+  },
+  loginEditing: {
+    justifyContent: "flex-start",
+    paddingTop: 16,
+    paddingBottom: 24,
   },
   logo: {
     width: 70,
