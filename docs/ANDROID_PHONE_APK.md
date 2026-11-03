@@ -1,6 +1,6 @@
 # Android 휴대폰 설치용 APK
 
-휴대폰용은 `arm64-v8a`와 `armeabi-v7a`를 하나의 APK에 포함한다. 최소 Android 버전은 7.0(API 24)이다. 앱 버전은 1.4.1(10)이며 기기 전표 인식·항목 자동 입력·전표 삭제, 전체 경로 보기, 아이콘·시작 화면, 배송 물품·수량, 관리자 위치 공유 화면을 포함한다. 전표 기능은 [DEVICE_RECEIPT_OCR.md](DEVICE_RECEIPT_OCR.md)와 [RECEIPT_DELETE.md](RECEIPT_DELETE.md), 네이버 연속 안내·GPS 자동 완료·위치 서비스 복구는 [CONTINUOUS_DRIVING.md](CONTINUOUS_DRIVING.md)를 따른다. Metro나 Expo Go 없이 실행한다.
+휴대폰용은 `arm64-v8a`와 `armeabi-v7a`를 하나의 APK에 포함한다. 최소 Android 버전은 7.0(API 24)이다. 앱 버전은 1.4.2(11)이며 거래명세서 칸 배치에 따른 자동 입력·동일 사본 중복 방지·전표 삭제, 전체 경로 보기, 아이콘·시작 화면, 배송 물품·수량, 관리자 위치 공유 화면을 포함한다. 전표 기능은 [DEVICE_RECEIPT_OCR.md](DEVICE_RECEIPT_OCR.md)와 [RECEIPT_DELETE.md](RECEIPT_DELETE.md), 네이버 연속 안내·GPS 자동 완료·위치 서비스 복구는 [CONTINUOUS_DRIVING.md](CONTINUOUS_DRIVING.md)를 따른다. Metro나 Expo Go 없이 실행한다.
 
 ## 빌드
 

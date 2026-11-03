@@ -1,4 +1,5 @@
 import type { Item, ShipmentInput } from "../server/types.ts";
+import { prepareTradeStatement } from "./tradeStatement.ts";
 
 export type ReceiptLayoutElement = {
   text: string;
@@ -91,7 +92,8 @@ const itemAliases = [
 ];
 const quantityAliases = ["수량", "QTY"];
 const note = "사진 인식 결과를 원본 전표와 대조해 주세요.";
-const tirePattern = /\d{3}\s*\/\s*\d{2,3}\s*R\s*\d{2}/i;
+const tirePattern =
+  /(?:\d{3}\s*\/\s*\d{2,3}\s*R\s*\d{2}(?:\.\d+)?|\d{1,2}(?:\.\d+)?\s*R\s*\d{2}(?:\.\d+)?)/i;
 const phonePattern =
   /(?<!\d)0(?:1[016789]|\d{1,2})[-.\s]?\d{3,4}[-.\s]?\d{4}(?!\d)/g;
 const regionPattern =
@@ -290,6 +292,9 @@ function cleanRecipient(value: string): string {
   return clean(value)
     .replace(/^[|:：▶▷\s]+/, "")
     .replace(/(?<=[가-힣])\s+(?=[가-힣])/g, "")
+    .replace(/\s*\(\s*/g, "(")
+    .replace(/\s*\)/g, ")")
+    .replace(/(?:貴\s*中|귀\s*중)\s*$/, "")
     .replace(/\)\s*[을를]$/, ")")
     .trim();
 }
@@ -485,26 +490,33 @@ function layoutCandidates(
   return result;
 }
 function normalizeItemName(value: string): string {
-  return clean(value)
-    .replace(
-      /^\d{1,2}\s*[/.-]\s*\d{1,2}\s*[|:]?\s*(?=\d{3}\s*\/|[가-힣A-Za-z])/,
+  let text = clean(value);
+  if (!/^\d{1,2}(?:\.\d+)?\s*R\s*\d/i.test(text))
+    text = text.replace(
+      /^\d{1,2}\s*[/.-]\s*\d{1,2}(?!\s*R)\s*[|:]?\s*(?=\d{3}\s*\/|\d{1,2}(?:\.\d+)?\s*R|[가-힣A-Za-z])/,
       "",
-    )
+    );
+  return text
     .replace(/(\d{3})\s*\/\s*(\d{2,3})\s*R\s*(\d{2})/gi, "$1/$2R$3")
+    .replace(/(\d{1,2}(?:\.\d+)?)\s*R\s*(\d{2}(?:\.\d+)?)/gi, "$1R$2")
     .replace(/\s*([,[\]])\s*/g, "$1")
     .replace(/\s*([|])\s*$/g, "")
+    .replace(/^[|[\]]+(?=\d)/, "")
     .trim();
 }
 function quantity(value: string): number | null {
-  const match = clean(value).match(
-    /^(\d+(?:\.\d+)?)\s*(?:개|본|박스|상자|EA|BOX|SET|묶음|포|대|장)?$/i,
-  );
+  const match = clean(value)
+    .replace(/^(\d+)\.$/, "$1")
+    .match(
+      /^(\d+(?:\.\d+)?)\s*(?:개|본|박스|상자|EA|BOX|SET|묶음|포|대|장)?$/i,
+    );
   if (!match) return null;
   const number = Number(match[1]);
   return number > 0 && number <= 10000 ? number : null;
 }
 function itemName(value: string): boolean {
   const text = clean(value);
+  if (/^[A-Za-z|]$/.test(text)) return false;
   if (
     /^(?:품명(?:및)?|품목|규격|수량|단가|금액|합계|공급가액|월\/일|적요|QTY)+$/i.test(
       compact(text).replace(/[|:：]/g, ""),
@@ -567,8 +579,14 @@ function tableItems(atoms: Cell[]): Item[] {
     )
     .at(-1);
   const nameLeft = date
-    ? (centerX(date) + nameCenter) / 2
-    : Math.max(0, table.name.x - 0.06);
+    ? date.x + date.width
+    : Math.max(
+        0,
+        Math.min(
+          table.name.x - 0.06,
+          ...table.sameRow.map((cell) => cell.x + 0.03),
+        ),
+      );
   const data = atoms.filter(
     (cell) =>
       cell.y > table.qtyHeader.y + table.qtyHeader.height * 0.65 &&
@@ -878,13 +896,16 @@ export function extractReceipt(
   layout?: ReceiptLayout,
   context: ReceiptContext = {},
 ): ReceiptExtraction {
+  const template = prepareTradeStatement(rawText, layout, context);
+  rawText = template.rawText;
+  layout = template.layout;
   const lines = rawText
     .slice(0, 50000)
     .split(/\r?\n/)
     .map(clean)
     .filter(Boolean);
   const positions = normalizedLayout(layout);
-  const warnings: string[] = [];
+  const warnings: string[] = [...template.warnings];
   const candidates = (field: Field) =>
     textCandidates(lines, field).concat(
       layoutCandidates(positions.lines, positions.atoms, field),
@@ -926,6 +947,7 @@ export function extractReceipt(
     }))
     .sort((a, b) => b.score - a.score);
   let address = addresses[0]?.value || "";
+  if (template.buyer) address = normalizeAddress(template.buyer.address);
   // Join a detached numeric tail only when it uniquely closes this address.
   if (address.includes("(") && !address.includes(")")) {
     const tails = lines.filter((line) => /^\d+(?:-\d+)?\)$/.test(line));
@@ -1005,7 +1027,11 @@ export function extractReceipt(
     distinctPhones.length > 1 &&
     distinctPhones[0].index !== distinctPhones[1].index &&
     Math.abs(distinctPhones[0].score - distinctPhones[1].score) < 1;
-  const phone = ambiguousPhone ? "" : phones[0]?.value || "";
+  const phone = template.buyer
+    ? cleanPhone(template.buyer.phone)
+    : ambiguousPhone
+      ? ""
+      : phones[0]?.value || "";
   if (
     !phone &&
     phoneCandidates.some((entry) => Boolean(entry.value.match(phonePattern)))
@@ -1019,11 +1045,14 @@ export function extractReceipt(
     );
   if (items.some((item) => !item.quantity))
     warnings.push("확인되지 않은 품목 수량을 입력해 주세요.");
-  if (!recipient) warnings.push("배송받는 거래처를 확인해 주세요.");
+  const recipientValue = template.buyer
+    ? cleanRecipient(template.buyer.recipient)
+    : recipient?.value || "";
+  if (!recipientValue) warnings.push("배송받는 거래처를 확인해 주세요.");
   if (!address) warnings.push("배송받는 주소를 확인해 주세요.");
   if (!items.length) warnings.push("배송 물품을 확인해 주세요.");
   const draft: ShipmentInput = {
-    recipient: recipient?.value || "",
+    recipient: recipientValue,
     address,
     phone,
     items: items.length ? items : [{ name: "", quantity: 1 }],

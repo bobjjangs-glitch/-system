@@ -2,7 +2,7 @@
   "expo": {
     "name": "바른배차",
     "slug": "bareun-dispatch",
-    "version": "1.4.1",
+    "version": "1.4.2",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "scheme": "bareundispatch",
@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "com.bobjjang.bareundispatch",
-      "versionCode": 10,
+      "versionCode": 11,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",

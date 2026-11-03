@@ -1747,6 +1747,10 @@ function Admin({
                 />
               </View>
             </View>
+            <Text style={[s.muted, { marginBottom: 16 }]}>
+              거래명세서 제목 아래의 거래처·주소·연락처와 품목표가 함께 보이게
+              촬영해 주세요.
+            </Text>
             {deviceDrafts.length > 0 && (
               <>
                 <Text style={[s.section, { marginTop: 12 }]}>
@@ -2539,6 +2543,7 @@ function Admin({
                       <Field
                         label={`물품 ${i + 1}`}
                         value={item.name}
+                        multiline
                         onChangeText={(name) =>
                           updateReview(index, {
                             items: row.items.map((v, j) =>
