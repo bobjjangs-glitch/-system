@@ -25,8 +25,8 @@ export const id = () => randomUUID();
 export const defaultCompany: Company = {
   name: "넘버원타이어",
   address: "대전광역시 동구 물류로14번길 13",
-  lat: 36.2720208,
-  lng: 127.4680604,
+  lat: 36.2719407,
+  lng: 127.4680343,
   serviceMinutes: 10,
   navigation: "naver",
 };

@@ -10,11 +10,13 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
 .company{background:#faad65;color:#173628}.delivered{background:#73867e}.failed{background:#b95242}
 .next{background:#2563eb;box-shadow:0 0 0 4px #2563eb44}
 #fit-route{display:none;position:absolute;top:12px;left:12px;z-index:100;border:0;background:white;padding:12px 15px;font-weight:700;color:#142d35;border-radius:8px;box-shadow:0 2px 8px #0002;cursor:pointer}
+#map-loading{position:absolute;top:12px;right:12px;z-index:99;padding:12px;background:white;border-radius:8px;font-size:12px;color:#52645d}
 #map-error{display:none;position:absolute;inset:0;z-index:110;align-items:center;justify-content:center;flex-direction:column;padding:24px;background:#eef2f4;text-align:center;color:#52645d;font-size:14px;gap:16px}
 #configure,#retry{border:0;border-radius:8px;background:#165b52;color:white;padding:12px 18px;cursor:pointer;font-weight:700}
 #retry{display:none;background:white;color:#165b52}
 </style></head><body><div id="map" aria-label="네이버 실시간 운행 지도"></div>
 <button id="fit-route" type="button" aria-label="전체 경로 보기">전체 경로</button>
+<div id="map-loading" role="status">네이버 지도를 불러오는 중이에요.</div>
 <div id="map-error" role="status"><div id="error-message"></div><button id="configure" type="button">네이버 지도 설정</button><button id="retry" type="button">지도 다시 불러오기</button></div>
 <script>(function(){
   const key=${JSON.stringify(key)};
@@ -28,6 +30,7 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
   }
   function error(message){
     failed=true;clearTimeout(timer);
+    document.getElementById('map-loading').style.display='none';
     document.getElementById('error-message').textContent=message;
     document.getElementById('map-error').style.display='flex';
   }
@@ -127,7 +130,10 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
     try{
       maps=window.naver.maps;
       map=new maps.Map('map',{center:new maps.LatLng(36.3504,127.3848),zoom:12,minZoom:5,maxZoom:20,zoomControl:true,zoomControlOptions:{position:maps.Position.BOTTOM_RIGHT}});
-      maps.Event.once(map,'tilesloaded',function(){clearTimeout(timer);});
+      maps.Event.once(map,'tilesloaded',function(){
+        clearTimeout(timer);document.documentElement.dataset.mapReady='true';
+        document.getElementById('map-loading').style.display='none';
+      });
       document.getElementById('fit-route').style.display='block';
       if(pending)render(pending);
       if(typeof ResizeObserver!=='undefined')new ResizeObserver(resize).observe(document.getElementById('map'));
@@ -137,7 +143,7 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
   };
   send('dispatch-map-ready');
   if(!key){error('네이버 지도 연결이 필요해요. 관리자 지도 설정에 웹 지도용 Key ID를 입력해 주세요.');return;}
-  timer=setTimeout(function(){error('네이버 지도를 불러오지 못했어요. 인터넷 연결과 지도 인증을 확인해 주세요.');},15000);
+  timer=setTimeout(function(){error('네이버 지도를 불러오지 못했어요. 인터넷 연결과 지도 인증을 확인해 주세요.');},30000);
   const script=document.createElement('script');script.async=true;script.referrerPolicy='strict-origin-when-cross-origin';
   script.src='https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId='+encodeURIComponent(key)+'&callback=initDispatchNaverMap';
   script.onerror=function(){error('네이버 지도를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.');};document.head.appendChild(script);

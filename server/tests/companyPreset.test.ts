@@ -24,8 +24,8 @@ test("넘버원타이어 설정 적용 시 미완료 코스의 순서·상태·�
     store.close();
     store = new Store(dataDir);
     assert.deepEqual(store.company(), defaultCompany);
-    assert.equal(defaultCompany.lat, 36.2720208);
-    assert.equal(defaultCompany.lng, 127.4680604);
+    assert.equal(defaultCompany.lat, 36.2719407);
+    assert.equal(defaultCompany.lng, 127.4680343);
     assert.deepEqual(store.all("SELECT id,routeId,sequence,status FROM shipments ORDER BY id"), before);
     assert.equal(store.session(login.token)?.userId, driver.id);
     assert.ok(store.login("781629"));
