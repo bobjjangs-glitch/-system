@@ -34,6 +34,7 @@ export type Company = {
   serviceMinutes: number;
   navigation: "kakao" | "naver" | "default";
 };
+export type MapSettings = { naverKeyId: string };
 export type Session = {
   userId: string;
   role: "admin" | "driver";

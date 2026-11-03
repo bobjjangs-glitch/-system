@@ -84,6 +84,8 @@ export function Field({
   numeric = false,
   multiline = false,
   secure = false,
+  autoCapitalize,
+  autoCorrect,
 }: {
   label: string;
   value: string;
@@ -92,6 +94,8 @@ export function Field({
   numeric?: boolean;
   multiline?: boolean;
   secure?: boolean;
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
+  autoCorrect?: boolean;
 }) {
   return (
     <View style={{ gap: 7, marginBottom: 13 }}>
@@ -105,6 +109,8 @@ export function Field({
         keyboardType={numeric ? "numeric" : "default"}
         secureTextEntry={secure}
         multiline={multiline}
+        autoCapitalize={autoCapitalize}
+        autoCorrect={autoCorrect}
         style={[
           s.input,
           multiline && { minHeight: 76, textAlignVertical: "top" },

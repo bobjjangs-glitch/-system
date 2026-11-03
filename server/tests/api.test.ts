@@ -304,7 +304,7 @@ test(
       const route = planned.data.find((r: any) => r.driverId === d1.id);
       assert.deepEqual(route.geometry[0], route.geometry.at(-1));
       assert.ok(route.durationMinutes > 0);
-      assert.equal(route.company.name, "우리 회사");
+      assert.equal(route.company.name, "넘버원타이어");
       assert.equal(
         (await call("/api/driver/routes/" + route.id + "/start", {}, token2))
           .status,

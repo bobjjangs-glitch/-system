@@ -55,6 +55,7 @@ import {
 } from "lucide-react-native";
 import type {
   Company,
+  MapSettings,
   Driver,
   Route,
   Session,
@@ -91,6 +92,7 @@ import type { DriverAutomation } from "./src/driverAutomation";
 import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
 import RouteOverview from "./src/RouteOverview";
+import AdminMapOverview, { MAP_ROUTE_COLORS } from "./src/AdminMapOverview";
 import DeliveryItems, { CargoSummary } from "./src/DeliveryItems";
 import {
   Badge,
@@ -123,6 +125,7 @@ type DriverState = Driver & { position: Position | null };
 type Dashboard = {
   date: string;
   company: Company;
+  mapSettings?: MapSettings;
   demo: boolean;
   shipments: Shipment[];
   routes: Route[];
@@ -521,6 +524,8 @@ function Admin({
     [selectedDriver, setSelectedDriver] = useState<string | null>(null),
     [review, setReview] = useState<ImportBatch | null>(null),
     [company, setCompany] = useState<Company | null>(null),
+    [mapSettings, setMapSettings] = useState<MapSettings | null>(null),
+    [mapOverview, setMapOverview] = useState(false),
     [driverEdit, setDriverEdit] = useState<
       (Partial<Driver> & { pin?: string }) | null
     >(null),
@@ -675,12 +680,23 @@ function Admin({
     }
   };
   if (!data) return <Loading />;
+  const coloredRoutes = data.routes.map((route, index) => ({ ...route, color: MAP_ROUTE_COLORS[index % MAP_ROUTE_COLORS.length] }));
   const shownRoutes = selectedDriver
-    ? data.routes.filter((r) => r.driverId === selectedDriver)
-    : data.routes;
+    ? coloredRoutes.filter((r) => r.driverId === selectedDriver)
+    : coloredRoutes;
   const shownDrivers = selectedDriver
     ? data.drivers.filter((d) => d.id === selectedDriver)
     : data.drivers;
+  const adminMapData = {
+    company: data.company,
+    routes: shownRoutes,
+    drivers: shownDrivers,
+    map: { provider: "naver", naverKeyId: data.mapSettings?.naverKeyId ?? "" },
+  };
+  const openMapSettings = () => {
+    setMapOverview(false);
+    setMapSettings({ naverKeyId: data.mapSettings?.naverKeyId ?? "" });
+  };
   const routeStatus = (route: Route) => (
     <Badge
       text={statusName[route.status]}
@@ -803,7 +819,7 @@ function Admin({
               />
             </View>
             <View style={[s.between, { marginVertical: 15 }]}>
-              <Text style={s.h2}>실시간 운행 지도</Text>
+              <Text style={s.h2}>네이버 실시간 운행 지도</Text>
               <View style={s.row}>
                 <View style={st.dot} />
                 <Text style={s.muted}>실제 수신 위치 표시</Text>
@@ -833,13 +849,14 @@ function Admin({
               </View>
             </ScrollView>
             <MapPanel
-              data={{
-                company: data.company,
-                routes: shownRoutes,
-                drivers: shownDrivers,
-              }}
+              data={adminMapData}
+              onConfigure={openMapSettings}
               height={width > 650 ? 350 : 290}
             />
+            <View style={[s.row, { marginTop: 12, flexWrap: "wrap" }]}>
+              <Button title="전체 운행 지도 크게 보기" secondary small icon={Navigation} onPress={() => setMapOverview(true)} />
+              <Button title="네이버 지도 설정" secondary small icon={Settings2} onPress={openMapSettings} />
+            </View>
             <Text
               style={[
                 s.muted,
@@ -1847,6 +1864,28 @@ function Admin({
             )}
           </>
         )}
+      </Sheet>
+      <AdminMapOverview
+        visible={mapOverview}
+        data={adminMapData}
+        onClose={() => setMapOverview(false)}
+        onConfigure={openMapSettings}
+        onAllDrivers={selectedDriver ? () => setSelectedDriver(null) : undefined}
+      />
+      <Sheet title="네이버 지도 설정" visible={!!mapSettings} onClose={() => setMapSettings(null)}>
+        {mapSettings && <>
+          <Field label="네이버 지도 Key ID" value={mapSettings.naverKeyId} placeholder="웹 지도용 Key ID" autoCapitalize="none" autoCorrect={false} onChangeText={(naverKeyId) => setMapSettings({ naverKeyId })} />
+          <Text style={[s.muted, { marginBottom: 15 }]}>네이버 Cloud Maps Application의 웹 지도용 Key ID를 입력해 주세요. Dynamic Map을 활성화하고 Web 서비스 URL에 현재 서버 주소를 등록해야 합니다.</Text>
+          <Text selectable style={[s.muted, { marginBottom: 15 }]}>{API_URL}</Text>
+          <Button title="네이버 Cloud Application 열기" secondary onPress={() => Linking.openURL("https://console.ncloud.com/maps/application")} />
+          <Text style={[s.muted, { marginVertical: 15 }]}>지도 설정은 운행 중에도 변경할 수 있으며 배차와 배송 내역은 유지됩니다.</Text>
+          {!data.mapSettings && <Text style={[s.muted, { marginBottom: 15 }]}>현재 서버에는 지도 설정 기능이 없습니다. 최신 서버 버전을 배포한 뒤 저장해 주세요.</Text>}
+          <Button title="지도 설정 저장" icon={Check} disabled={busy || !data.mapSettings} onPress={() => run(async () => {
+            await api("/api/map-settings", { method: "PUT", body: JSON.stringify(mapSettings) });
+            setMapSettings(null);
+            await refresh();
+          })} />
+        </>}
       </Sheet>
       <Sheet
         title="회사 · 배송 설정"

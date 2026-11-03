@@ -84,3 +84,15 @@ test("외부 도로 서비스 없이도 복귀와 배송지 체류 시간을 포
   assert.deepEqual(result.geometry[0], result.geometry.at(-1));
   assert.ok(result.durationMinutes >= defaultCompany.serviceMinutes);
 });
+
+test("회사 왕복 경로를 유지하면서 배송지 5곳에 체류 시간 10분씩 총 50분을 포함한다", async () => {
+  const stops = shipments.slice(0, 5) as (Shipment & { lat: number; lng: number })[];
+  const driving = await estimateRoute({ ...defaultCompany, serviceMinutes: 0 }, stops, false);
+  const withService = await estimateRoute(defaultCompany, stops, false);
+  assert.equal(defaultCompany.name, "넘버원타이어");
+  assert.equal(defaultCompany.address, "대전광역시 동구 물류로14번길 13");
+  assert.equal(defaultCompany.serviceMinutes, 10);
+  assert.equal(withService.durationMinutes - driving.durationMinutes, 50);
+  assert.deepEqual(withService.geometry[0], defaultCompany);
+  assert.deepEqual(withService.geometry.at(-1), defaultCompany);
+});

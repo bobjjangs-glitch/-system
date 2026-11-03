@@ -1,5 +1,8 @@
-// Shared by the API, web iframe, and native WebView so a new APK includes its map UI.
-export function createMapDocument(apiUrl = "") {
+import { createNaverMapDocument } from "./naverMapDocument.ts";
+
+// Naver uses the hosted document so SDK authentication sees the registered HTTPS origin.
+export function createMapDocument(apiUrl = "", options?: { provider?: string; naverKeyId?: string }) {
+  if (options?.provider === "naver") return createNaverMapDocument(options.naverKeyId);
   const assets = (apiUrl.replace(/\/$/, "") + "/leaflet/").replace(
     /[&"<>]/g,
     (c) => ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[c]!,

@@ -12,7 +12,10 @@ import {
   createDecipheriv,
   hkdfSync,
 } from "node:crypto";
-import type { Company, Driver, Route, Session, Shipment } from "./types.ts";
+import type { Company, Driver, MapSettings, Route, Session, Shipment } from "./types.ts";
+import { DEFAULT_NAVER_MAP_KEY_ID } from "../src/mapConfig.ts";
+import { loopDistance } from "./routing.ts";
+import { isPoint } from "./types.ts";
 
 export const today = () =>
   new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(
@@ -20,13 +23,14 @@ export const today = () =>
   );
 export const id = () => randomUUID();
 export const defaultCompany: Company = {
-  name: "우리 회사",
-  address: "대전광역시 중구 중앙로 101",
-  lat: 36.3277,
-  lng: 127.4204,
-  serviceMinutes: 5,
-  navigation: "kakao",
+  name: "넘버원타이어",
+  address: "대전광역시 동구 물류로14번길 13",
+  lat: 36.2720208,
+  lng: 127.4680604,
+  serviceMinutes: 10,
+  navigation: "naver",
 };
+export const COMPANY_PRESET_KEY = "company-preset:numberone-tire-v1";
 export class Store {
   db: DatabaseSync;
   pepper: Buffer;
@@ -73,6 +77,7 @@ export class Store {
     this.db
       .prepare("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)")
       .run("company", JSON.stringify(defaultCompany));
+    this.applyCompanyPreset();
   }
   one<T = any>(sql: string, ...args: any[]): T | undefined {
     return this.db.prepare(sql).get(...args) as T | undefined;
@@ -98,6 +103,39 @@ export class Store {
     return JSON.parse(
       this.one("SELECT value FROM settings WHERE key=?", "company")!.value,
     );
+  }
+  private applyCompanyPreset() {
+    if (this.one("SELECT key FROM settings WHERE key=?", COMPANY_PRESET_KEY)) return;
+    this.transaction(() => {
+      this.run("UPDATE settings SET value=? WHERE key=?", JSON.stringify(defaultCompany), "company");
+      this.run("INSERT OR REPLACE INTO geocodes(address,lat,lng) VALUES(?,?,?)", defaultCompany.address, defaultCompany.lat, defaultCompany.lng);
+      for (const route of this.all("SELECT * FROM routes WHERE status IN ('planned','active','returning')")) {
+        const previous: Company = JSON.parse(route.company);
+        const shipments = this.all("SELECT lat,lng FROM shipments WHERE routeId=? ORDER BY sequence", route.id);
+        const points = shipments.filter(isPoint);
+        const moved = previous.lat !== defaultCompany.lat || previous.lng !== defaultCompany.lng;
+        const km = loopDistance(defaultCompany, points) * 1.35;
+        const duration = moved
+          ? Math.ceil(km / 25 * 60 + shipments.length * defaultCompany.serviceMinutes)
+          : Math.max(0, Math.ceil(route.durationMinutes + shipments.length * (defaultCompany.serviceMinutes - previous.serviceMinutes)));
+        this.run(
+          "UPDATE routes SET company=?,distanceKm=?,durationMinutes=?,estimateSource=?,geometry=? WHERE id=?",
+          JSON.stringify(defaultCompany),
+          moved ? Math.round(km * 10) / 10 : route.distanceKm,
+          duration,
+          moved ? "approximate" : route.estimateSource,
+          moved ? JSON.stringify([defaultCompany, ...points, defaultCompany]) : route.geometry,
+          route.id,
+        );
+      }
+      this.run("INSERT INTO settings(key,value) VALUES(?,?)", COMPANY_PRESET_KEY, "applied");
+    });
+  }
+  mapSettings(): MapSettings {
+    const row = this.one("SELECT value FROM settings WHERE key=?", "map");
+    return row
+      ? JSON.parse(row.value)
+      : { naverKeyId: process.env.NAVER_MAPS_KEY_ID?.trim() || DEFAULT_NAVER_MAP_KEY_ID };
   }
   pinIndex(pin: string): string {
     return createHmac("sha256", this.pepper).update(pin).digest("hex");

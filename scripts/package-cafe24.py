@@ -13,7 +13,7 @@ if not (root / "dist/index.html").is_file():
 selected = [
     "package.json", "package-lock.json", "App.tsx", "app.json", "eas.json",
     "tsconfig.json", ".env.example", ".gitignore", "README.md", "render.yaml",
-    "src", "server", "deploy", "docs", "dist", "plugins", "patches", "native-tests",
+    "src", "server", "deploy", "docs", "dist", "assets", "plugins", "patches", "native-tests",
     "scripts/install-cloud.sh", "scripts/package-cafe24.py", "scripts/cloud-android-env.sh", "scripts/setup-cloud-android.py", "scripts/build-ldplayer-apk.sh", "scripts/build-android-phone-apk.sh", "scripts/verify-location-service-apk.py",
 ]
 files = []

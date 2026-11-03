@@ -244,6 +244,19 @@ export function createDispatchApp(
     res.json({ user: req.user, company: store.company(), route });
   });
   app.get("/api/company", (req, res) => res.json(store.company()));
+  app.get("/api/map-settings", admin, (_req, res) => res.json(store.mapSettings()));
+  app.put("/api/map-settings", admin, (req, res) => {
+    const value = req.body?.naverKeyId;
+    assert(typeof value === "string", "네이버 지도 Key ID를 입력해 주세요.");
+    const naverKeyId = value.trim();
+    assert(!naverKeyId || /^[A-Za-z0-9_-]{5,128}$/.test(naverKeyId), "네이버 지도 Key ID 형식을 확인해 주세요.");
+    store.run(
+      "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      "map", JSON.stringify({ naverKeyId }),
+    );
+    notify("changed");
+    res.json(store.mapSettings());
+  });
   app.put("/api/company", admin, (req, res) => {
     assert(
       !store.one(
@@ -719,6 +732,7 @@ export function createDispatchApp(
     res.json({
       date,
       company: store.company(),
+      mapSettings: store.mapSettings(),
       demo:
         store.one("SELECT value FROM settings WHERE key=?", "demo")?.value ===
         "true",
@@ -1147,7 +1161,14 @@ export function createDispatchApp(
     "/leaflet",
     express.static(resolve("node_modules/leaflet/dist"), { maxAge: "1d" }),
   );
-  app.get("/map", (_req, res) => res.type("html").send(createMapDocument()));
+  app.get("/map", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (req.query.provider === "naver") {
+      const key = typeof req.query.keyId === "string" ? req.query.keyId : store.mapSettings().naverKeyId;
+      return res.type("html").send(createMapDocument("", { provider: "naver", naverKeyId: key }));
+    }
+    return res.type("html").send(createMapDocument());
+  });
   if (existsSync(resolve("dist/index.html"))) {
     app.use(express.static(resolve("dist")));
     app.get("/{*path}", (_req, res) =>
