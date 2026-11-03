@@ -1,8 +1,9 @@
 import ExcelJS from "exceljs";
 import { Readable } from "node:stream";
-import { fork } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { ShipmentInput } from "./types.ts";
 
@@ -233,10 +234,303 @@ function receiptImageSize(buffer: Buffer): { width: number; height: number } {
   throw unreadablePhoto();
 }
 
-let ocrBusy = false;
+type OcrOptions = {
+  workerUrl?: URL;
+  timeoutMs?: number;
+  queueTimeoutMs?: number;
+  signal?: AbortSignal;
+};
+type OcrJob = {
+  id: number;
+  buffer: Buffer;
+  options: OcrOptions;
+  resolve: (text: string) => void;
+  reject: (error: Error) => void;
+  queuedTimer?: ReturnType<typeof setTimeout>;
+  removeAbort?: () => void;
+  cancelActive?: () => void;
+};
+type WarmWorker = {
+  child: ChildProcess;
+  langDir: string;
+  ready: Promise<void>;
+  closed: Promise<void>;
+  closing: boolean;
+  uses: number;
+  pending?: {
+    id: number;
+    resolve: (text: string) => void;
+    reject: (error: Error) => void;
+  };
+};
+const cancelledPhoto = () =>
+  new ReceiptOcrError("전표 사진 읽기를 취소했습니다.", 499);
+const queueExpired = () =>
+  new ReceiptOcrError(
+    "앞선 전표 처리가 지연되고 있습니다. 잠시 후 다시 촬영해 주세요.",
+    408,
+  );
+
+class ReceiptOcrPool {
+  private queue: OcrJob[] = [];
+  private active?: OcrJob;
+  private worker?: WarmWorker;
+  private idleTimer?: ReturnType<typeof setTimeout>;
+  private pumping = false;
+  private nextId = 0;
+  private stopping = false;
+
+  private readonly workerUrl: URL;
+  constructor(workerUrl = new URL("./receiptOcrWorker.ts", import.meta.url)) {
+    this.workerUrl = workerUrl;
+  }
+
+  recognize(buffer: Buffer, options: OcrOptions): Promise<string> {
+    if (options.signal?.aborted) return Promise.reject(cancelledPhoto());
+    if (this.stopping) return Promise.reject(cancelledPhoto());
+    // Keep at most one active and two waiting images in memory. Ordinary next
+    // photos wait briefly instead of receiving the old global "busy" error.
+    if (this.queue.length >= 2)
+      return Promise.reject(
+        new ReceiptOcrError(
+          "대기 중인 전표가 많습니다. 앞선 전표 결과를 확인한 뒤 다시 촬영해 주세요.",
+          429,
+        ),
+      );
+    return new Promise((resolve, reject) => {
+      const job: OcrJob = {
+        id: ++this.nextId,
+        buffer,
+        options,
+        resolve,
+        reject,
+      };
+      const abort = () => {
+        if (this.active === job) job.cancelActive?.();
+        else {
+          const index = this.queue.indexOf(job);
+          if (index < 0) return;
+          this.queue.splice(index, 1);
+          this.release(job);
+          reject(cancelledPhoto());
+        }
+      };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      job.removeAbort = () =>
+        options.signal?.removeEventListener("abort", abort);
+      job.queuedTimer = setTimeout(() => {
+        const index = this.queue.indexOf(job);
+        if (index < 0) return;
+        this.queue.splice(index, 1);
+        this.release(job);
+        reject(queueExpired());
+      }, options.queueTimeoutMs ?? 12_000);
+      job.queuedTimer.unref();
+      this.queue.push(job);
+      void this.pump();
+    });
+  }
+
+  private release(job: OcrJob) {
+    clearTimeout(job.queuedTimer);
+    job.removeAbort?.();
+  }
+
+  private startWorker(): WarmWorker {
+    const langDir = mkdtempSync(join(tmpdir(), "bareun-ocr-"));
+    let child: ChildProcess;
+    try {
+      child = fork(this.workerUrl, [], {
+        execArgv: ["--use-env-proxy", "--experimental-strip-types"],
+        serialization: "advanced",
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+    } catch (error) {
+      void rm(langDir, { recursive: true, force: true });
+      throw error;
+    }
+    let readyResolve!: () => void;
+    let readyReject!: (error: Error) => void;
+    let closeResolve!: () => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+    // A failed child can emit before pump attaches its await continuation.
+    void ready.catch(() => {});
+    const closed = new Promise<void>((resolve) => {
+      closeResolve = resolve;
+    });
+    const state: WarmWorker = {
+      child,
+      langDir,
+      ready,
+      closed,
+      closing: false,
+      uses: 0,
+    };
+    this.worker = state;
+    child.on("message", (message: unknown) => {
+      const value = message as {
+        type?: string;
+        id?: number;
+        text?: unknown;
+      } | null;
+      if (value?.type === "ready") readyResolve();
+      else if (value?.type === "failed" && value.id === undefined)
+        readyReject(unreadablePhoto());
+      else if (value?.id === state.pending?.id) {
+        if (value?.type === "result" && typeof value.text === "string")
+          state.pending?.resolve(value.text);
+        else if (value?.type === "failed")
+          state.pending?.reject(unreadablePhoto());
+      }
+    });
+    child.once("error", () => {
+      readyReject(unreadablePhoto());
+      state.pending?.reject(unreadablePhoto());
+    });
+    child.once("close", () => {
+      readyReject(unreadablePhoto());
+      state.pending?.reject(unreadablePhoto());
+      if (this.worker === state) this.worker = undefined;
+      void rm(langDir, { recursive: true, force: true })
+        .catch(() => {})
+        .finally(closeResolve);
+    });
+    child.send({ type: "initialize", langDir }, (error) => {
+      if (error) {
+        readyReject(unreadablePhoto());
+        child.kill("SIGKILL");
+      }
+    });
+    return state;
+  }
+
+  private async stopWorker() {
+    clearTimeout(this.idleTimer);
+    const state = this.worker;
+    if (!state) return;
+    if (!state.closing) {
+      state.closing = true;
+      // Retain the exit event until memory/temp files are released, including
+      // shutdown called while the warm process/channel were idle and unref'ed.
+      state.child.ref();
+      state.child.channel?.ref();
+      state.child.kill("SIGKILL");
+    }
+    await state.closed;
+  }
+
+  private async run(job: OcrJob): Promise<string> {
+    clearTimeout(this.idleTimer);
+    let fail!: (error: Error) => void;
+    let stopping: Promise<void> | undefined;
+    let interruptionError: Error | undefined;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      fail = reject;
+    });
+    const interrupt = (error: Error) => {
+      if (stopping) return;
+      interruptionError = error;
+      stopping = this.stopWorker().then(() => {
+        fail(error);
+      });
+    };
+    job.cancelActive = () => interrupt(cancelledPhoto());
+    const deadline = setTimeout(
+      () => interrupt(recognitionTimeout()),
+      job.options.timeoutMs ?? 25_000,
+    );
+    deadline.unref();
+    try {
+      if (job.options.signal?.aborted) throw cancelledPhoto();
+      if (this.worker?.closing)
+        await Promise.race([this.worker.closed, interrupted]);
+      const state = this.worker ?? this.startWorker();
+      state.child.ref();
+      state.child.channel?.ref();
+      await Promise.race([state.ready, interrupted]);
+      const recognition = new Promise<string>((resolve, reject) => {
+        state.pending = { id: job.id, resolve, reject };
+        state.child.send(
+          { type: "recognize", id: job.id, image: job.buffer },
+          (error) => {
+            if (error) reject(unreadablePhoto());
+          },
+        );
+      });
+      const text = await Promise.race([recognition, interrupted]);
+      state.pending = undefined;
+      state.uses++;
+      if (state.uses >= 15) await this.stopWorker();
+      return text;
+    } catch (error) {
+      await this.stopWorker();
+      if (stopping) await stopping;
+      throw (
+        interruptionError ??
+        (error instanceof ReceiptOcrError ? error : unreadablePhoto())
+      );
+    } finally {
+      clearTimeout(deadline);
+      job.cancelActive = undefined;
+    }
+  }
+
+  private async pump() {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.queue.length) {
+        const job = this.queue.shift()!;
+        clearTimeout(job.queuedTimer);
+        this.active = job;
+        try {
+          job.resolve(await this.run(job));
+        } catch (error) {
+          job.reject(error as Error);
+        } finally {
+          this.release(job);
+          this.active = undefined;
+        }
+      }
+    } finally {
+      this.pumping = false;
+      const state = this.worker;
+      if (state) {
+        // Keep models ready without keeping a stopped API/test process alive.
+        state.child.unref();
+        state.child.channel?.unref();
+        this.idleTimer = setTimeout(() => {
+          void this.stopWorker();
+        }, 90_000);
+        this.idleTimer.unref();
+      }
+    }
+  }
+
+  async close() {
+    this.stopping = true;
+    for (const job of this.queue.splice(0)) {
+      this.release(job);
+      job.reject(cancelledPhoto());
+    }
+    this.active?.cancelActive?.();
+    await this.stopWorker();
+  }
+}
+
+let receiptPool: ReceiptOcrPool | undefined;
+export async function shutdownReceiptOcrPool() {
+  const pool = receiptPool;
+  receiptPool = undefined;
+  await pool?.close();
+}
+
 export async function recognizeReceipt(
   buffer: Buffer,
-  options: { workerUrl?: URL; timeoutMs?: number } = {},
+  options: OcrOptions = {},
 ): Promise<string> {
   const { width, height } = receiptImageSize(buffer);
   if (width <= 0 || height <= 0) throw unreadablePhoto();
@@ -245,75 +539,18 @@ export async function recognizeReceipt(
       "사진 해상도가 너무 큽니다. 일반 화질로 다시 촬영하거나 2,000만 화소 이하로 사진 크기를 줄여 주세요.",
       413,
     );
-  // One administrator upload at a time; never retain an unbounded queue of images.
-  if (ocrBusy)
-    throw new ReceiptOcrError(
-      "다른 전표 사진을 읽고 있습니다. 잠시 후 다시 업로드해 주세요.",
-      429,
-    );
-  ocrBusy = true;
-  let langDir: string | undefined;
-  try {
-    langDir = await mkdtemp(join(tmpdir(), "bareun-ocr-"));
-    return await new Promise<string>((resolve, reject) => {
-      // A process boundary also covers startup failures before createWorker()
-      // exposes its thread handle. A stuck decoder cannot take down the API.
-      const child = fork(
-        options.workerUrl ?? new URL("./receiptOcrWorker.ts", import.meta.url),
-        [],
-        {
-          execArgv: ["--use-env-proxy", "--experimental-strip-types"],
-          serialization: "advanced",
-          stdio: ["ignore", "ignore", "ignore", "ipc"],
-        },
-      );
-      let text: string | undefined;
-      let failure: ReceiptOcrError | undefined;
-      let sent = false;
-      let settled = false;
-      const finish = (error?: ReceiptOcrError) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (error) reject(error);
-        else resolve(text!);
-      };
-      const stop = (error: ReceiptOcrError) => {
-        failure = error;
-        // Wait for close after killing so the next photo cannot overlap memory.
-        if (!child.kill("SIGKILL")) finish(error);
-      };
-      const timer = setTimeout(
-        () => stop(recognitionTimeout()),
-        options.timeoutMs ?? 45_000,
-      );
-      timer.unref();
-      child.once("error", () => stop(unreadablePhoto()));
-      child.on("message", (message: unknown) => {
-        const value = message as { type?: string; text?: unknown } | null;
-        if (value?.type === "ready" && !sent) {
-          sent = true;
-          child.send({ image: buffer, langDir }, (error) => {
-            if (error) stop(unreadablePhoto());
-          });
-        } else if (value?.type === "result" && typeof value.text === "string") {
-          text = value.text;
-        }
-      });
-      child.once("close", (code) => {
-        finish(
-          failure ??
-            (code === 0 && text !== undefined ? undefined : unreadablePhoto()),
-        );
-      });
-    });
-  } finally {
+  // Dedicated workers make deadline/crash injection tests independent of the
+  // production warm pool; no request can select this option over HTTP.
+  if (options.workerUrl) {
+    const pool = new ReceiptOcrPool(options.workerUrl);
     try {
-      if (langDir) await rm(langDir, { recursive: true, force: true });
+      return await pool.recognize(buffer, options);
     } finally {
-      ocrBusy = false;
+      await pool.close();
     }
   }
+  receiptPool ??= new ReceiptOcrPool();
+  return receiptPool.recognize(buffer, options);
 }
 export function validateShipments(rows: unknown): ShipmentInput[] {
   if (!Array.isArray(rows) || !rows.length || rows.length > 2000)

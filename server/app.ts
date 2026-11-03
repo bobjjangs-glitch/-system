@@ -13,11 +13,13 @@ import ExcelJS from "exceljs";
 import { Store, id, today } from "./database.ts";
 import type { Session, Shipment, Company, Route } from "./types.ts";
 import { isPoint } from "./types.ts";
-import { optimizeAssignments, estimateRoute, orderStops } from "./routing.ts";
+import { planDispatch, estimateRoute, orderStops, routePlanning, resolveDeparture } from "./routing.ts";
+import { trafficRoutingStatus } from "./naverDirections.ts";
 import {
   parseReceipt,
   parseSpreadsheet,
   recognizeReceipt,
+  shutdownReceiptOcrPool,
   validateShipments,
 } from "./imports.ts";
 import { geocode } from "./geocoding.ts";
@@ -244,15 +246,21 @@ export function createDispatchApp(
     res.json({ user: req.user, company: store.company(), route });
   });
   app.get("/api/company", (req, res) => res.json(store.company()));
-  app.get("/api/map-settings", admin, (_req, res) => res.json(store.mapSettings()));
+  app.get("/api/map-settings", admin, (_req, res) =>
+    res.json(store.mapSettings()),
+  );
   app.put("/api/map-settings", admin, (req, res) => {
     const value = req.body?.naverKeyId;
     assert(typeof value === "string", "네이버 지도 Key ID를 입력해 주세요.");
     const naverKeyId = value.trim();
-    assert(!naverKeyId || /^[A-Za-z0-9_-]{5,128}$/.test(naverKeyId), "네이버 지도 Key ID 형식을 확인해 주세요.");
+    assert(
+      !naverKeyId || /^[A-Za-z0-9_-]{5,128}$/.test(naverKeyId),
+      "네이버 지도 Key ID 형식을 확인해 주세요.",
+    );
     store.run(
       "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-      "map", JSON.stringify({ naverKeyId }),
+      "map",
+      JSON.stringify({ naverKeyId }),
     );
     notify("changed");
     res.json(store.mapSettings());
@@ -526,8 +534,30 @@ export function createDispatchApp(
     if ([".xlsx", ".csv"].includes(extension))
       drafts = await parseSpreadsheet(file.buffer, file.originalname);
     else {
-      rawText = await recognizeReceipt(file.buffer);
-      drafts = [parseReceipt(rawText)];
+      const cancellation = new AbortController();
+      const cancel = () => {
+        if (!res.writableEnded) cancellation.abort();
+      };
+      // Request "close" also fires after normal multipart parsing. Only an
+      // unfinished response closing means the phone actually cancelled/left.
+      res.once("close", cancel);
+      try {
+        rawText = await recognizeReceipt(file.buffer, {
+          signal: cancellation.signal,
+        });
+        if (cancellation.signal.aborted || res.destroyed) return;
+        assert(
+          rawText.trim(),
+          "전표의 글자를 읽지 못했습니다. 글자가 선명하게 나오도록 다시 촬영하거나 배송지를 직접 입력해 주세요.",
+          422,
+        );
+        drafts = [parseReceipt(rawText)];
+      } catch (error) {
+        if (cancellation.signal.aborted || res.destroyed) return;
+        throw error;
+      } finally {
+        res.off("close", cancel);
+      }
     }
     const importId = id(),
       storedName = importId + extension,
@@ -752,6 +782,7 @@ export function createDispatchApp(
   app.get("/api/routes", admin, (req, res) =>
     res.json(store.routes(dateValue(req.query.date))),
   );
+  app.get("/api/routing-status", admin, (_req, res) => res.json(trafficRoutingStatus()));
   app.post("/api/routes/optimize", admin, async (req, res) => {
     assert(
       !routingBusy,
@@ -786,17 +817,12 @@ export function createDispatchApp(
         );
       if (Array.isArray(req.body.driverIds))
         drivers = drivers.filter((d) => req.body.driverIds.includes(d.id));
-      const groups = optimizeAssignments(company, shipments, drivers),
-        estimated = await Promise.all(
-          groups.map(async (group) => ({
-            ...group,
-            estimate: await estimateRoute(
-              company,
-              group.stops,
-              options.roadRouting !== false,
-            ),
-          })),
-        );
+      const estimated = await planDispatch(company, shipments, drivers, {
+        roadRouting: options.roadRouting !== false,
+        trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : undefined,
+        departureAt: req.body.departureAt,
+        serviceDate: date,
+      });
       store.transaction(() => {
         assert(
           !store.one(
@@ -814,10 +840,10 @@ export function createDispatchApp(
           "DELETE FROM routes WHERE serviceDate=? AND status='planned'",
           date,
         );
-        for (const { driver, stops, estimate } of estimated) {
+        for (const { driver, stops, estimate, planning } of estimated) {
           const routeId = id();
           store.run(
-            "INSERT INTO routes(id,driverId,serviceDate,distanceKm,durationMinutes,estimateSource,geometry,company) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO routes(id,driverId,serviceDate,distanceKm,durationMinutes,estimateSource,geometry,company,planning) VALUES(?,?,?,?,?,?,?,?,?)",
             routeId,
             driver.id,
             date,
@@ -826,6 +852,7 @@ export function createDispatchApp(
             estimate.estimateSource,
             JSON.stringify(estimate.geometry),
             JSON.stringify(company),
+            JSON.stringify(planning),
           );
           stops.forEach((s, i) =>
             store.run(
@@ -864,7 +891,9 @@ export function createDispatchApp(
         route.company,
         stops as any,
         options.roadRouting !== false,
+        { trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : route.estimateSource === "naver-traffic" ? true : undefined },
       );
+      const planning = routePlanning(route.company, stops as (Shipment & { lat: number; lng: number })[], estimate, resolveDeparture({ departureAt: req.body.departureAt ?? route.planning?.departureAt, serviceDate: route.serviceDate }));
       store.transaction(() => {
         assert(
           store.one("SELECT status FROM routes WHERE id=?", row.id)?.status ===
@@ -876,11 +905,12 @@ export function createDispatchApp(
           store.run("UPDATE shipments SET sequence=? WHERE id=?", i + 1, v),
         );
         store.run(
-          "UPDATE routes SET distanceKm=?,durationMinutes=?,estimateSource=?,geometry=? WHERE id=?",
+          "UPDATE routes SET distanceKm=?,durationMinutes=?,estimateSource=?,geometry=?,planning=? WHERE id=?",
           estimate.distanceKm,
           estimate.durationMinutes,
           estimate.estimateSource,
           JSON.stringify(estimate.geometry),
+          JSON.stringify(planning),
           row.id,
         );
       });
@@ -943,6 +973,7 @@ export function createDispatchApp(
               r.company,
               stops,
               options.roadRouting !== false,
+              { trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : r.estimateSource === "naver-traffic" ? true : undefined },
             ),
           };
         }),
@@ -963,12 +994,14 @@ export function createDispatchApp(
               s.id,
             ),
           );
+          const planning = routePlanning(r.company, r.stops as (Shipment & { lat: number; lng: number })[], r.estimate, resolveDeparture({ departureAt: req.body.departureAt ?? r.planning?.departureAt, serviceDate: r.serviceDate }));
           store.run(
-            "UPDATE routes SET distanceKm=?,durationMinutes=?,estimateSource=?,geometry=? WHERE id=?",
+            "UPDATE routes SET distanceKm=?,durationMinutes=?,estimateSource=?,geometry=?,planning=? WHERE id=?",
             r.estimate.distanceKm,
             r.estimate.durationMinutes,
             r.estimate.estimateSource,
             JSON.stringify(r.estimate.geometry),
+            JSON.stringify(planning),
             r.id,
           );
           if (!r.stops.length) store.run("DELETE FROM routes WHERE id=?", r.id);
@@ -1164,8 +1197,13 @@ export function createDispatchApp(
   app.get("/map", (req, res) => {
     res.set("Cache-Control", "no-store");
     if (req.query.provider === "naver") {
-      const key = typeof req.query.keyId === "string" ? req.query.keyId : store.mapSettings().naverKeyId;
-      return res.type("html").send(createMapDocument("", { provider: "naver", naverKeyId: key }));
+      const key =
+        typeof req.query.keyId === "string"
+          ? req.query.keyId
+          : store.mapSettings().naverKeyId;
+      return res
+        .type("html")
+        .send(createMapDocument("", { provider: "naver", naverKeyId: key }));
     }
     return res.type("html").send(createMapDocument());
   });
@@ -1206,6 +1244,7 @@ export function createDispatchApp(
     store,
     close: async () => {
       clearInterval(liveTimer);
+      await shutdownReceiptOcrPool();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((r) => wss.close(() => r()));
       if (server.listening)

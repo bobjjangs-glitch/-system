@@ -40,6 +40,19 @@ export type Session = {
   role: "admin" | "driver";
   name: string;
 };
+export type RoutePlanning = {
+  departureAt: string;
+  returnAt: string;
+  trafficCheckedAt: string | null;
+  basis: "current-traffic" | "static";
+  legTimesEstimated: boolean;
+  stops: {
+    shipmentId: string;
+    arrivalAt: string;
+    departureAt: string;
+    travelMinutes: number;
+  }[];
+};
 export type Route = {
   id: string;
   driverId: string;
@@ -53,6 +66,7 @@ export type Route = {
   company: Company;
   startedAt: string | null;
   completedAt: string | null;
+  planning?: RoutePlanning | null;
   stops: Shipment[];
 };
 export function isPoint(value: {

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
@@ -93,7 +93,14 @@ import type { DriverAutomation } from "./src/driverAutomation";
 import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
 import KeyboardViewport from "./src/KeyboardViewport";
+import {
+  TrafficPlannerControls,
+  RoutePlanningSummary,
+  StopArrival,
+} from "./src/TrafficRouteSummary";
 import { createImportForm } from "./src/importUpload";
+import { prepareReceiptImage } from "./src/receiptImage";
+import ReceiptUploadProgress from "./src/ReceiptUploadProgress";
 import RouteOverview from "./src/RouteOverview";
 import AdminMapOverview, { MAP_ROUTE_COLORS } from "./src/AdminMapOverview";
 import DeliveryItems, { CargoSummary } from "./src/DeliveryItems";
@@ -194,7 +201,9 @@ function AppContent() {
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false),
     [loginEditing, setLoginEditing] = useState(false);
+  const pendingOperations = useRef(0);
   const run: Run = async (fn) => {
+    pendingOperations.current++;
     setBusy(true);
     setNotice("");
     try {
@@ -202,7 +211,8 @@ function AppContent() {
     } catch (error) {
       setNotice((error as Error).message);
     } finally {
-      setBusy(false);
+      pendingOperations.current--;
+      setBusy(pendingOperations.current > 0);
     }
   };
   const refreshSetup = async () => {
@@ -595,14 +605,35 @@ function Admin({
     [pins, setPins] = useState<{ name: string; pin: string }[] | null>(null),
     [detail, setDetail] = useState<Shipment | null>(null),
     [confirmClear, setConfirmClear] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    phase: string;
+    startedAt: number;
+  } | null>(null);
+  const [reviewError, setReviewError] = useState("");
+  const uploadRef = useRef<{ controller: AbortController } | null>(null);
+  const reviewRef = useRef(review);
+  const mounted = useRef(true);
+  const currentDate = useRef(date);
+  reviewRef.current = review;
+  currentDate.current = date;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      uploadRef.current?.controller.abort();
+    };
+  }, []);
+  useEffect(() => setReviewError(""), [review?.id, review?.fileName]);
   const { width } = useWindowDimensions();
   const refresh = useCallback(async () => {
     const [board, batches] = await Promise.all([
       api<Dashboard>("/api/dashboard?date=" + date),
       api<ImportBatch[]>("/api/imports?date=" + date),
     ]);
-    setData(board);
-    setImports(batches);
+    if (mounted.current && currentDate.current === date) {
+      setData(board);
+      setImports(batches);
+    }
   }, [date]);
   useEffect(() => {
     refresh().catch((e) => tell(e.message));
@@ -654,47 +685,207 @@ function Admin({
       });
       updateReview(i, point);
     });
-  const pickUpload = (kind: "camera" | "photo" | "excel") =>
-    run(async () => {
+  const pickUpload = async (kind: "camera" | "photo" | "excel") => {
+    // State-based button disabling is not a lock: refreshes and rapid taps can
+    // otherwise admit another photo before the first operation has finished.
+    if (uploadRef.current) return;
+    if (reviewRef.current) {
+      tell("열려 있는 전표를 먼저 확인하거나 닫아 주세요.");
+      return;
+    }
+    const operation = { controller: new AbortController() };
+    uploadRef.current = operation;
+    function waitForStep<T>(work: Promise<T>): Promise<T> {
+      const signal = operation.controller.signal;
+      return new Promise((resolve, reject) => {
+        const abort = () => {
+          signal.removeEventListener("abort", abort);
+          reject(signal.reason);
+        };
+        work.then(
+          (result) => {
+            signal.removeEventListener("abort", abort);
+            resolve(result);
+          },
+          (error) => {
+            signal.removeEventListener("abort", abort);
+            reject(error);
+          },
+        );
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      });
+    }
+    const phase = (value: string) => {
+      if (mounted.current && uploadRef.current === operation)
+        setUploadProgress({ phase: value, startedAt: Date.now() });
+    };
+    let prepared: Awaited<ReturnType<typeof prepareReceiptImage>> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    tell("");
+    phase(
+      kind === "camera" ? "사진을 촬영하고 있어요" : "파일을 선택하고 있어요",
+    );
+    try {
       let asset: any;
       if (kind === "excel") {
-        const result = await DocumentPicker.getDocumentAsync({
-          type: [
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "text/csv",
-            "application/csv",
-          ],
-          copyToCacheDirectory: true,
-        });
+        const result = await waitForStep(
+          DocumentPicker.getDocumentAsync({
+            type: [
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "text/csv",
+              "application/csv",
+            ],
+            copyToCacheDirectory: true,
+          }),
+        );
         if (result.canceled) return;
         asset = result.assets[0];
       } else {
-        const permission =
+        const permission = await waitForStep(
           kind === "camera"
-            ? await ImagePicker.requestCameraPermissionsAsync()
-            : await ImagePicker.requestMediaLibraryPermissionsAsync();
+            ? ImagePicker.requestCameraPermissionsAsync()
+            : ImagePicker.requestMediaLibraryPermissionsAsync(),
+        );
         if (!permission.granted)
           throw new Error("카메라 또는 사진 접근 권한을 허용해 주세요.");
-        const result =
+        const result = await waitForStep(
           kind === "camera"
-            ? await ImagePicker.launchCameraAsync({
+            ? ImagePicker.launchCameraAsync({
                 mediaTypes: ["images"],
-                quality: 0.9,
+                quality: 1,
               })
-            : await ImagePicker.launchImageLibraryAsync({
+            : ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ["images"],
-                quality: 0.9,
+                quality: 1,
                 preferredAssetRepresentationMode:
                   ImagePicker.UIImagePickerPreferredAssetRepresentationMode
                     .Compatible,
-              });
+              }),
+        );
         if (result.canceled) return;
         asset = result.assets[0];
       }
-      const form = await createImportForm(asset, kind, date);
-      setReview(await api("/api/imports", { method: "POST", body: form }));
-      await refresh();
+      if (operation.controller.signal.aborted)
+        throw operation.controller.signal.reason;
+      if (kind !== "excel") {
+        phase("사진 크기를 맞추고 있어요");
+        const processed = await waitForStep(
+          prepareReceiptImage(asset).then((result) => {
+            // A native image operation may finish after cancellation. Clean its
+            // temporary file even though this upload has already been released.
+            if (operation.controller.signal.aborted)
+              void result.dispose().catch(() => {});
+            return result;
+          }),
+        );
+        prepared = processed;
+        asset = processed.asset;
+      }
+      if (operation.controller.signal.aborted)
+        throw operation.controller.signal.reason;
+      const form = await waitForStep(createImportForm(asset, kind, date));
+      if (operation.controller.signal.aborted)
+        throw operation.controller.signal.reason;
+      phase(
+        kind === "excel"
+          ? "엑셀 파일을 읽고 있어요"
+          : "전송하고 글자를 읽고 있어요",
+      );
+      timeout = setTimeout(() => {
+        const error = new Error("Receipt processing timed out");
+        error.name = "TimeoutError";
+        operation.controller.abort(error);
+      }, 45_000);
+      const batch = await api<ImportBatch>("/api/imports", {
+        method: "POST",
+        body: form,
+        signal: operation.controller.signal,
+      });
+      if (!batch || !Array.isArray(batch.drafts))
+        throw new Error(
+          "전표 결과를 읽지 못했습니다. 업로드 내역에서 확인해 주세요.",
+        );
+      if (!operation.controller.signal.aborted && mounted.current) {
+        setReview(batch);
+        // The result is ready. Unrelated dashboard refresh must not keep the
+        // review and next-photo controls blocked for another network round trip.
+        refresh().catch((error) => {
+          if (mounted.current) tell((error as Error).message);
+        });
+      }
+    } catch (error) {
+      if (mounted.current) {
+        tell(
+          operation.controller.signal.aborted
+            ? operation.controller.signal.reason?.name === "TimeoutError"
+              ? "전표 처리 시간이 초과됐습니다. 업로드 내역을 확인한 뒤 다시 촬영해 주세요."
+              : "전표 처리를 취소했습니다. 이미 완료된 전표는 업로드 내역에서 확인할 수 있어요."
+            : (error as Error)?.message ||
+                "전표를 읽지 못했습니다. 다시 촬영해 주세요.",
+        );
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      await prepared?.dispose().catch(() => {});
+      if (uploadRef.current === operation) {
+        uploadRef.current = null;
+        if (mounted.current) setUploadProgress(null);
+      }
+    }
+  };
+  const openStoredReview = async (id: string) => {
+    if (uploadRef.current) return;
+    const batch = await api<ImportBatch>("/api/imports/" + id);
+    if (mounted.current && !uploadRef.current) setReview(batch);
+  };
+  const saveReview = async (nextPhoto = false) => {
+    const batch = reviewRef.current;
+    if (!batch || uploadRef.current) return;
+    setReviewError("");
+    try {
+      if (batch.status === "edit") {
+        const row = batch.drafts[0] as Shipment;
+        await patch("/api/shipments/" + row.id, row);
+      } else if (batch.id) {
+        await post("/api/imports/" + batch.id + "/commit", {
+          rows: batch.drafts,
+        });
+      } else {
+        await post("/api/shipments", {
+          serviceDate: batch.serviceDate,
+          rows: batch.drafts,
+        });
+      }
+    } catch (error) {
+      if (mounted.current) setReviewError((error as Error).message);
+      throw error;
+    }
+    if (!mounted.current) return;
+    setReview(null);
+    refresh().catch((error) => {
+      if (mounted.current) tell((error as Error).message);
     });
+    if (nextPhoto) {
+      setTab("upload");
+      // Finish the sheet's native closing animation before presenting a camera.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      if (!mounted.current) return;
+      if (
+        Platform.OS === "web" &&
+        typeof navigator !== "undefined" &&
+        navigator.userActivation?.isActive === false
+      ) {
+        // Browsers can expire the tap gesture during a slow save request.
+        // Give the next capture a fresh tap instead of a blocked file dialog.
+        tell(
+          "전표를 저장했습니다. ‘전표 촬영’을 눌러 다음 사진을 촬영해 주세요.",
+        );
+        return;
+      }
+      void pickUpload("camera");
+    }
+  };
   const download = async (path: string, name: string) => {
     const response = await fetch(API_URL + path, {
       headers: { Authorization: `Bearer ${getSession()?.token}` },
@@ -772,6 +963,7 @@ function Admin({
           <Badge text="관리자" />
           <Pressable
             accessibilityLabel="회사 설정"
+            disabled={busy || !!uploadProgress}
             onPress={() => {
               setCompany({ ...data.company });
               setConfirmClear(false);
@@ -789,11 +981,21 @@ function Admin({
           </Pressable>
         </View>
       </View>
+      {uploadProgress && (
+        <ReceiptUploadProgress
+          phase={uploadProgress.phase}
+          startedAt={uploadProgress.startedAt}
+          onCancel={() => uploadRef.current?.controller.abort()}
+        />
+      )}
       <ScrollView
         refreshControl={
           <RefreshControl
             refreshing={false}
-            onRefresh={() => run(refresh)}
+            enabled={!uploadProgress}
+            onRefresh={() => {
+              if (!uploadRef.current) run(refresh);
+            }}
             tintColor={C.green}
           />
         }
@@ -1086,7 +1288,7 @@ function Admin({
             />
             <View style={[s.row, { alignItems: "stretch", marginBottom: 12 }]}>
               <Pressable
-                disabled={busy}
+                disabled={busy || !!uploadProgress}
                 accessibilityLabel="전표 촬영"
                 onPress={() => pickUpload("camera")}
                 style={st.uploadCard}
@@ -1096,7 +1298,7 @@ function Admin({
                 <Text style={s.muted}>인쇄된 전표를 사진으로</Text>
               </Pressable>
               <Pressable
-                disabled={busy}
+                disabled={busy || !!uploadProgress}
                 accessibilityLabel="엑셀 업로드"
                 onPress={() => pickUpload("excel")}
                 style={st.uploadCard}
@@ -1113,7 +1315,7 @@ function Admin({
                   secondary
                   icon={Upload}
                   onPress={() => pickUpload("photo")}
-                  disabled={busy}
+                  disabled={busy || !!uploadProgress}
                 />
               </View>
               <View style={{ flex: 1 }}>
@@ -1121,7 +1323,9 @@ function Admin({
                   title="배송지 직접 입력"
                   secondary
                   icon={Plus}
+                  disabled={busy || !!uploadProgress}
                   onPress={() =>
+                    !uploadRef.current &&
                     setReview({
                       fileName: "직접 입력",
                       drafts: [blankShipment()],
@@ -1161,11 +1365,8 @@ function Admin({
                 .map((batch) => (
                   <Pressable
                     key={batch.id}
-                    onPress={() =>
-                      run(async () =>
-                        setReview(await api("/api/imports/" + batch.id)),
-                      )
-                    }
+                    disabled={!!uploadProgress}
+                    onPress={() => run(() => openStoredReview(batch.id!))}
                   >
                     <Card>
                       <View style={s.between}>
@@ -1221,17 +1422,21 @@ function Admin({
                   회사 복귀
                 </Text>
               </View>
-              <Text style={[s.muted, { marginVertical: 13 }]}>
-                기사별 최대 배송지 수 안에서 가까운 배송지를 묶고 순서를
-                개선합니다. 전역 최적해나 실시간 교통을 보장하지 않습니다.
-              </Text>
-              <Button
-                title={`추천 배차 생성 · ${data.stats.pending}곳 미배차`}
-                icon={RouteIcon}
-                disabled={busy || !!data.stats.active}
-                onPress={() =>
+              <TrafficPlannerControls
+                busy={busy || !!uploadProgress}
+                active={!!data.stats.active}
+                count={
+                  data.shipments.filter((shipment) =>
+                    ["pending", "assigned"].includes(shipment.status),
+                  ).length
+                }
+                date={date}
+                onGenerate={(options) =>
                   run(async () => {
-                    await post("/api/routes/optimize", { serviceDate: date });
+                    await post("/api/routes/optimize", {
+                      serviceDate: date,
+                      ...options,
+                    });
                     await refresh();
                   })
                 }
@@ -1298,13 +1503,22 @@ function Admin({
                   <Badge text="회사 왕복 포함" />
                   <Badge
                     text={
-                      route.estimateSource === "road"
-                        ? "도로 기준 예상"
-                        : "대략적 예상"
+                      route.estimateSource === "naver-traffic"
+                        ? "실시간 교통 반영"
+                        : route.estimateSource === "road"
+                          ? "도로 기준 예상"
+                          : "대략적 예상"
                     }
-                    tone={route.estimateSource === "road" ? "grey" : "amber"}
+                    tone={
+                      route.estimateSource === "naver-traffic"
+                        ? "green"
+                        : route.estimateSource === "road"
+                          ? "grey"
+                          : "amber"
+                    }
                   />
                 </View>
+                <RoutePlanningSummary route={route} />
                 <TimelineCompany name={route.company.name} label="출발" />
                 {route.stops.map((stop, index) => (
                   <View key={stop.id} style={st.stopRow}>
@@ -1339,6 +1553,7 @@ function Admin({
                           {stop.recipient}
                         </Text>
                         <Text style={s.muted}>{stop.address}</Text>
+                        <StopArrival route={route} shipmentId={stop.id} />
                         <Text
                           style={{ color: C.green, fontSize: 10, marginTop: 4 }}
                         >
@@ -1412,7 +1627,9 @@ function Admin({
               .map((shipment) => (
                 <Pressable
                   key={shipment.id}
+                  disabled={!!uploadProgress}
                   onPress={() =>
+                    !uploadRef.current &&
                     setReview({
                       fileName: "배송지 수정",
                       id: undefined,
@@ -1620,11 +1837,8 @@ function Admin({
                       title="내용 확인"
                       secondary
                       small
-                      onPress={() =>
-                        run(async () =>
-                          setReview(await api("/api/imports/" + batch.id)),
-                        )
-                      }
+                      disabled={!!uploadProgress}
+                      onPress={() => run(() => openStoredReview(batch.id!))}
                     />
                   )}
                   <Button
@@ -1882,26 +2096,30 @@ function Admin({
             <Button
               title={`${review.drafts.length}곳 확인하고 ${review.status === "edit" ? "저장" : "배송지 등록"}`}
               icon={Check}
-              disabled={busy}
-              onPress={() =>
-                run(async () => {
-                  if (review.status === "edit") {
-                    const row = review.drafts[0] as Shipment;
-                    await patch("/api/shipments/" + row.id, row);
-                  } else if (review.id)
-                    await post("/api/imports/" + review.id + "/commit", {
-                      rows: review.drafts,
-                    });
-                  else
-                    await post("/api/shipments", {
-                      serviceDate: review.serviceDate,
-                      rows: review.drafts,
-                    });
-                  setReview(null);
-                  await refresh();
-                })
-              }
+              disabled={busy || !!uploadProgress}
+              onPress={() => run(() => saveReview())}
             />
+            {reviewError ? (
+              <Text
+                accessibilityRole="alert"
+                style={{ color: C.red, marginTop: 12 }}
+              >
+                {reviewError}
+              </Text>
+            ) : null}
+            {review.id &&
+              review.status !== "edit" &&
+              review.status !== "committed" && (
+                <View style={{ marginTop: 10 }}>
+                  <Button
+                    title="저장하고 다음 전표 촬영"
+                    secondary
+                    icon={Camera}
+                    disabled={busy || !!uploadProgress}
+                    onPress={() => run(() => saveReview(true))}
+                  />
+                </View>
+              )}
             {review.status !== "edit" && (
               <View style={{ marginTop: 10 }}>
                 <Button
@@ -2657,11 +2875,14 @@ function DriverApp({
                   marginTop: 12,
                 }}
               >
-                {route.estimateSource === "approximate"
-                  ? "대략적 예상 · 도로 정보를 가져오지 못해 거리로 추정했어요."
-                  : "도로 기준 예상 · 배송지 체류 포함, 실시간 교통 미반영"}
+                {route.estimateSource === "naver-traffic"
+                  ? "네이버 실시간 교통 반영 · 배차 계산 시점 기준, 배송지 체류·회사 복귀 포함"
+                  : route.estimateSource === "approximate"
+                    ? "대략적 예상 · 도로 정보를 가져오지 못해 거리로 추정했어요."
+                    : "도로 기준 예상 · 배송지 체류 포함, 실시간 교통 미반영"}
               </Text>
             </Card>
+            <RoutePlanningSummary route={route} />
             <CargoSummary stops={route.stops} />
             <Text style={[s.h3, { marginBottom: 10 }]}>전체 경로 미리보기</Text>
             <MapPanel
@@ -2850,6 +3071,7 @@ function DriverApp({
                 <Text style={{ fontSize: 14, color: C.ink, lineHeight: 23 }}>
                   {next.address}
                 </Text>
+                <StopArrival route={route} shipmentId={next.id} />
                 {next.phone && (
                   <Pressable
                     onPress={() => Linking.openURL("tel:" + next.phone)}
@@ -2957,6 +3179,7 @@ function DriverApp({
                     <Text style={[s.muted, { marginTop: 5 }]}>
                       {stop.address}
                     </Text>
+                    <StopArrival route={route} shipmentId={stop.id} />
                     <View style={{ marginTop: 9 }}>
                       <DeliveryItems items={stop.items} compact />
                     </View>

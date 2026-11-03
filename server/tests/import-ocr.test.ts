@@ -1,12 +1,14 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { recognizeReceipt } from "../imports.ts";
+import { recognizeReceipt, shutdownReceiptOcrPool } from "../imports.ts";
+
+after(() => shutdownReceiptOcrPool());
 
 test(
   "손상 사진과 과도한 해상도를 거절해도 OCR·API 프로세스가 살아 있고 다음 전표를 처리한다",
@@ -15,6 +17,10 @@ test(
     const dir = await mkdtemp(join(tmpdir(), "bareun-ocr-regression-"));
     const appUrl = new URL("../app.ts", import.meta.url).href;
     const fixtureUrl = new URL("./fixtures/receipt.png", import.meta.url).href;
+    const blankFixtureUrl = new URL(
+      "./fixtures/blank-receipt.png",
+      import.meta.url,
+    ).href;
     const script = `
     import assert from 'node:assert/strict';
     import { readFile } from 'node:fs/promises';
@@ -44,6 +50,10 @@ test(
       assert.equal(corrupt.status, 422);
       assert.match(corrupt.data.error, /전표 사진을 읽지 못했습니다/);
       assert.equal((await fetch(base + '/api/health')).status, 200);
+      const blank = await upload(await readFile(new URL(${JSON.stringify(blankFixtureUrl)})));
+      assert.equal(blank.status, 422);
+      assert.match(blank.data.error, /전표의 글자를 읽지 못했습니다/);
+      assert.match(blank.data.error, /직접 입력/);
       const oversized = Buffer.from(image);
       oversized.writeUInt32BE(8176, 16);
       oversized.writeUInt32BE(6144, 20);
@@ -57,13 +67,12 @@ test(
       assert.match(valid.data.rawText, /DELIVERY/i);
       assert.equal(valid.data.drafts[0].items[0].quantity, 2);
       const parallel = await Promise.all([upload(image), upload(image)]);
-      assert.deepEqual(parallel.map(result => result.status).sort(), [201, 429]);
-      assert.match(parallel.find(result => result.status === 429).data.error, /다른 전표/);
+      assert.deepEqual(parallel.map(result => result.status), [201, 201]);
       assert.equal((await fetch(base + '/api/health')).status, 200);
       const imports = await fetch(base + '/api/imports', {
         headers: { Authorization: 'Bearer ' + session.token }
       }).then(response => response.json());
-      assert.equal(imports.length, 2);
+      assert.equal(imports.length, 3);
       console.log('PROCESS_SURVIVED_OCR_ERROR_AND_RECOVERED');
     } finally {
       await runtime.close();
@@ -99,11 +108,13 @@ test(
           phase === "startup"
             ? "setInterval(() => {}, 1000);"
             : `import { writeFileSync } from 'node:fs';
-           process.once('message', () => {
-             writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-             setInterval(() => {}, 1000);
-           });
-           process.send({ type: 'ready' });`,
+           process.on('message', (message) => {
+             if (message.type === 'initialize') process.send({ type: 'ready' });
+             if (message.type === 'recognize') {
+               writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+               setInterval(() => {}, 1000);
+             }
+           });`,
         );
         const start = performance.now();
         await assert.rejects(
@@ -125,5 +136,95 @@ test(
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  },
+);
+
+function workerPid() {
+  const children = execFileSync(
+    "ps",
+    ["--ppid", String(process.pid), "-o", "pid=,args="],
+    { encoding: "utf8" },
+  );
+  const worker = children
+    .split("\n")
+    .find((line) => line.includes("/server/receiptOcrWorker.ts"));
+  assert.ok(worker, "A warm OCR child should exist");
+  return Number(worker.trim().split(/\s+/)[0]);
+}
+
+test(
+  "연속 사진은 같은 OCR 엔진을 사용하고 세 장까지 FIFO로 처리한다",
+  { timeout: 30_000 },
+  async () => {
+    await shutdownReceiptOcrPool();
+    const image = await readFile(
+      new URL("./fixtures/receipt.png", import.meta.url),
+    );
+    assert.match(await recognizeReceipt(image), /대전상사/);
+    const pid = workerPid();
+    assert.match(await recognizeReceipt(image), /생수/);
+    assert.equal(
+      workerPid(),
+      pid,
+      "Second photo must reuse its initialized model",
+    );
+    const order: number[] = [];
+    const jobs = [1, 2, 3].map((index) =>
+      recognizeReceipt(image).then((text) => {
+        order.push(index);
+        return text;
+      }),
+    );
+    await assert.rejects(
+      recognizeReceipt(image),
+      (error: any) =>
+        error.status === 429 && /대기 중인 전표/.test(error.message),
+    );
+    for (const text of await Promise.all(jobs)) assert.match(text, /DELIVERY/);
+    assert.deepEqual(order, [1, 2, 3]);
+    assert.equal(workerPid(), pid);
+  },
+);
+
+test(
+  "대기 취소는 진행 중 전표를 방해하지 않고 진행 중 취소는 종료 후 다음 전표를 처리한다",
+  { timeout: 30_000 },
+  async () => {
+    const image = await readFile(
+      new URL("./fixtures/receipt.png", import.meta.url),
+    );
+    const originalPid = workerPid();
+    const first = recognizeReceipt(image);
+    const queuedAbort = new AbortController();
+    const queued = recognizeReceipt(image, { signal: queuedAbort.signal });
+    queuedAbort.abort();
+    await assert.rejects(queued, (error: any) => error.status === 499);
+    assert.match(await first, /DELIVERY/);
+    assert.equal(workerPid(), originalPid);
+    const activeAbort = new AbortController();
+    const active = recognizeReceipt(image, { signal: activeAbort.signal });
+    activeAbort.abort();
+    await assert.rejects(active, (error: any) => error.status === 499);
+    assert.throws(() => process.kill(originalPid, 0), { code: "ESRCH" });
+    assert.match(await recognizeReceipt(image), /대전상사/);
+    assert.notEqual(workerPid(), originalPid);
+  },
+);
+
+test(
+  "대기 시간이 지나면 무한 로딩 없이 해당 전표만 실패하고 다음 촬영을 허용한다",
+  { timeout: 30_000 },
+  async () => {
+    const image = await readFile(
+      new URL("./fixtures/receipt.png", import.meta.url),
+    );
+    const first = recognizeReceipt(image);
+    const expired = recognizeReceipt(image, { queueTimeoutMs: 1 });
+    await assert.rejects(
+      expired,
+      (error: any) => error.status === 408 && /앞선 전표/.test(error.message),
+    );
+    assert.match(await first, /DELIVERY/);
+    assert.match(await recognizeReceipt(image), /생수/);
   },
 );
