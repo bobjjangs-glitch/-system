@@ -205,17 +205,19 @@ export function Sheet({
   visible,
   onClose,
   children,
+  animationType = "slide",
 }: {
   title: string;
   visible: boolean;
   onClose: () => void;
   children: React.ReactNode;
+  animationType?: "none" | "slide" | "fade";
 }) {
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
+      animationType={animationType}
       onRequestClose={onClose}
     >
       <View style={s.overlay}>

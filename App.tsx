@@ -99,6 +99,19 @@ import {
   StopArrival,
 } from "./src/TrafficRouteSummary";
 import { createImportForm } from "./src/importUpload";
+import {
+  recognizeDeviceReceipt,
+  removeDeviceOcrCache,
+  warmUpDeviceReceiptOcr,
+} from "./src/deviceReceiptOcr";
+import { parseReceipt } from "./src/receiptText";
+import {
+  createDeviceReceiptDraft,
+  listDeviceReceiptDrafts,
+  saveDeviceReceiptDraft,
+  removeDeviceReceiptDraft,
+} from "./src/deviceReceiptDrafts";
+import type { DeviceReceiptDraft } from "./src/deviceReceiptDrafts";
 import { prepareReceiptImage } from "./src/receiptImage";
 import ReceiptUploadProgress from "./src/ReceiptUploadProgress";
 import RouteOverview from "./src/RouteOverview";
@@ -136,6 +149,7 @@ type Dashboard = {
   date: string;
   company: Company;
   mapSettings?: MapSettings;
+  receiptCapabilities?: { deviceText: boolean; maxTextLength: number };
   demo: boolean;
   shipments: Shipment[];
   routes: Route[];
@@ -150,6 +164,8 @@ type Dashboard = {
 };
 type ImportBatch = {
   id?: string;
+  deviceLocalId?: string;
+  deviceRecognitionMs?: number;
   fileName: string;
   rawText?: string;
   drafts: ShipmentInput[];
@@ -222,6 +238,7 @@ function AppContent() {
     return data;
   };
   useEffect(() => {
+    void warmUpDeviceReceiptOcr();
     consumeLocationRecovery()
       .then((recovered) => {
         if (recovered)
@@ -610,6 +627,37 @@ function Admin({
     startedAt: number;
   } | null>(null);
   const [reviewError, setReviewError] = useState("");
+  const [deviceDrafts, setDeviceDrafts] = useState<DeviceReceiptDraft[]>([]);
+  const deviceDraftsRef = useRef<DeviceReceiptDraft[]>([]);
+  const reviewSaving = useRef(false);
+  const rememberDeviceDraft = (draft: DeviceReceiptDraft) => {
+    const all = [
+      draft,
+      ...deviceDraftsRef.current.filter(
+        (item) => item.localId !== draft.localId,
+      ),
+    ];
+    deviceDraftsRef.current = all;
+    if (mounted.current) setDeviceDrafts(all);
+  };
+  const openDeviceDraft = (
+    draft: DeviceReceiptDraft,
+    recognitionMs?: number,
+  ) => {
+    const batch: ImportBatch = {
+      id: draft.remoteId,
+      deviceLocalId: draft.localId,
+      deviceRecognitionMs: recognitionMs,
+      fileName: draft.fileName,
+      rawText: draft.rawText,
+      drafts: draft.drafts,
+      serviceDate: draft.serviceDate,
+      status: "device-local",
+      createdAt: draft.createdAt,
+    };
+    reviewRef.current = batch;
+    setReview(batch);
+  };
   const uploadRef = useRef<{ controller: AbortController } | null>(null);
   const reviewRef = useRef(review);
   const mounted = useRef(true);
@@ -618,6 +666,22 @@ function Admin({
   currentDate.current = date;
   useEffect(() => {
     mounted.current = true;
+    if (Platform.OS === "android") {
+      listDeviceReceiptDrafts(user.userId)
+        .then((loaded) => {
+          if (!mounted.current) return;
+          const combined = new Map(
+            loaded.map((draft) => [draft.localId, draft]),
+          );
+          for (const draft of deviceDraftsRef.current)
+            combined.set(draft.localId, draft);
+          deviceDraftsRef.current = [...combined.values()];
+          setDeviceDrafts(deviceDraftsRef.current);
+        })
+        .catch((error) => {
+          if (mounted.current) tell((error as Error).message);
+        });
+    }
     return () => {
       mounted.current = false;
       uploadRef.current?.controller.abort();
@@ -666,7 +730,8 @@ function Admin({
       setPins(result.drivers);
       await refresh();
     });
-  const updateReview = (i: number, changes: Partial<ShipmentInput>) =>
+  const updateReview = (i: number, changes: Partial<ShipmentInput>) => {
+    if (reviewSaving.current) return;
     setReview((old) =>
       old
         ? {
@@ -677,6 +742,7 @@ function Admin({
           }
         : null,
     );
+  };
   const locateRow = (i: number) =>
     run(async () => {
       if (!review) return;
@@ -768,6 +834,55 @@ function Admin({
       }
       if (operation.controller.signal.aborted)
         throw operation.controller.signal.reason;
+      if (kind !== "excel" && Platform.OS === "android") {
+        phase("휴대폰에서 글자를 읽고 있어요");
+        timeout = setTimeout(() => {
+          const error = new Error("Device receipt preview timed out");
+          error.name = "TimeoutError";
+          operation.controller.abort(error);
+        }, 5000);
+        const result = await waitForStep(
+          recognizeDeviceReceipt(asset.uri, operation.controller.signal),
+        );
+        try {
+          const processed = {
+            ...asset,
+            uri: result.imageUri,
+            file: undefined,
+            width: result.width,
+            height: result.height,
+            name: "receipt.jpg",
+            fileName: "receipt.jpg",
+            mimeType: "image/jpeg",
+          };
+          const draft = await waitForStep(
+            createDeviceReceiptDraft(
+              user.userId,
+              processed,
+              date,
+              result.text,
+              [parseReceipt(result.text)],
+            ).then((saved) => {
+              if (operation.controller.signal.aborted)
+                void removeDeviceReceiptDraft(user.userId, saved.localId).catch(
+                  () => {},
+                );
+              return saved;
+            }),
+          );
+          if (operation.controller.signal.aborted)
+            throw operation.controller.signal.reason;
+          if (timeout) {
+            clearTimeout(timeout);
+            timeout = undefined;
+          }
+          rememberDeviceDraft(draft);
+          if (mounted.current) openDeviceDraft(draft, result.durationMs);
+          return;
+        } finally {
+          await removeDeviceOcrCache(result.imageUri);
+        }
+      }
       if (kind !== "excel") {
         phase("사진 크기를 맞추고 있어요");
         const processed = await waitForStep(
@@ -819,7 +934,9 @@ function Admin({
         tell(
           operation.controller.signal.aborted
             ? operation.controller.signal.reason?.name === "TimeoutError"
-              ? "전표 처리 시간이 초과됐습니다. 업로드 내역을 확인한 뒤 다시 촬영해 주세요."
+              ? Platform.OS === "android" && kind !== "excel"
+                ? "휴대폰 글자 인식이 5초 안에 끝나지 않았습니다. 잠시 후 다시 시도해 주세요."
+                : "전표 처리 시간이 초과됐습니다. 업로드 내역을 확인한 뒤 다시 촬영해 주세요."
               : "전표 처리를 취소했습니다. 이미 완료된 전표는 업로드 내역에서 확인할 수 있어요."
             : (error as Error)?.message ||
                 "전표를 읽지 못했습니다. 다시 촬영해 주세요.",
@@ -836,15 +953,104 @@ function Admin({
   };
   const openStoredReview = async (id: string) => {
     if (uploadRef.current) return;
+    const local = deviceDraftsRef.current.find(
+      (draft) => draft.remoteId === id,
+    );
+    if (local) {
+      openDeviceDraft(local);
+      return;
+    }
     const batch = await api<ImportBatch>("/api/imports/" + id);
     if (mounted.current && !uploadRef.current) setReview(batch);
   };
+  const closeReview = async () => {
+    if (reviewSaving.current) return;
+    const batch = reviewRef.current;
+    if (batch?.deviceLocalId) {
+      const local = deviceDraftsRef.current.find(
+        (draft) => draft.localId === batch.deviceLocalId,
+      );
+      if (local) {
+        try {
+          const updated = {
+            ...local,
+            drafts: batch.drafts,
+            rawText: batch.rawText ?? local.rawText,
+            remoteId: batch.id ?? local.remoteId,
+          };
+          await saveDeviceReceiptDraft(updated);
+          rememberDeviceDraft(updated);
+        } catch (error) {
+          setReviewError((error as Error).message);
+          return;
+        }
+      }
+    }
+    reviewRef.current = null;
+    setReview(null);
+  };
   const saveReview = async (nextPhoto = false) => {
     const batch = reviewRef.current;
-    if (!batch || uploadRef.current) return;
+    if (!batch || uploadRef.current || reviewSaving.current) return;
+    reviewSaving.current = true;
+    Keyboard.dismiss();
     setReviewError("");
     try {
-      if (batch.status === "edit") {
+      if (batch.deviceLocalId) {
+        let local = deviceDraftsRef.current.find(
+          (draft) => draft.localId === batch.deviceLocalId,
+        );
+        if (!local) throw new Error("기기에 저장된 전표를 다시 열어 주세요.");
+        local = {
+          ...local,
+          drafts: batch.drafts,
+          rawText: batch.rawText ?? local.rawText,
+        };
+        await saveDeviceReceiptDraft(local);
+        rememberDeviceDraft(local);
+        if (!data?.receiptCapabilities?.deviceText)
+          throw new Error(
+            "서버를 최신 버전으로 업데이트한 뒤 저장해 주세요. 읽은 전표는 기기에 보관되어 있습니다.",
+          );
+        let remoteId = local.remoteId;
+        if (!remoteId) {
+          const form = await createImportForm(
+            local.asset,
+            "photo",
+            local.serviceDate,
+          );
+          form.append("recognitionSource", "android-device");
+          form.append("recognizedText", local.rawText);
+          form.append("deviceReceiptId", local.localId);
+          const uploaded = await api<ImportBatch>("/api/imports", {
+            method: "POST",
+            body: form,
+            signal: AbortSignal.timeout(20000),
+          });
+          if (!uploaded.id)
+            throw new Error(
+              "전표 저장 결과를 확인하지 못했습니다. 업로드 내역을 확인해 주세요.",
+            );
+          remoteId = uploaded.id;
+          local = { ...local, remoteId };
+          // Preserve the accepted import ID before committing edited fields.
+          // A failed validation retry must not upload a second original photo.
+          rememberDeviceDraft(local);
+          const updated = { ...batch, id: remoteId };
+          reviewRef.current = updated;
+          if (mounted.current) setReview(updated);
+          await saveDeviceReceiptDraft(local);
+        }
+        await post("/api/imports/" + remoteId + "/commit", {
+          rows: batch.drafts,
+          deviceReceiptId: local.localId,
+        });
+        await removeDeviceReceiptDraft(user.userId, batch.deviceLocalId);
+        deviceDraftsRef.current = deviceDraftsRef.current.filter(
+          (draft) => draft.localId !== batch.deviceLocalId,
+        );
+        if (mounted.current) setDeviceDrafts(deviceDraftsRef.current);
+      } else if (batch.status === "edit") {
         const row = batch.drafts[0] as Shipment;
         await patch("/api/shipments/" + row.id, row);
       } else if (batch.id) {
@@ -860,8 +1066,11 @@ function Admin({
     } catch (error) {
       if (mounted.current) setReviewError((error as Error).message);
       throw error;
+    } finally {
+      reviewSaving.current = false;
     }
     if (!mounted.current) return;
+    reviewRef.current = null;
     setReview(null);
     refresh().catch((error) => {
       if (mounted.current) tell((error as Error).message);
@@ -869,7 +1078,9 @@ function Admin({
     if (nextPhoto) {
       setTab("upload");
       // Finish the sheet's native closing animation before presenting a camera.
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await new Promise((resolve) =>
+        setTimeout(resolve, batch.deviceLocalId ? 100 : 400),
+      );
       if (!mounted.current) return;
       if (
         Platform.OS === "web" &&
@@ -1335,6 +1546,40 @@ function Admin({
                 />
               </View>
             </View>
+            {deviceDrafts.length > 0 && (
+              <>
+                <Text style={[s.section, { marginTop: 12 }]}>
+                  기기에 저장된 전표
+                </Text>
+                <Text style={[s.muted, { marginBottom: 12 }]}>
+                  읽은 내용은 보관되어 있어요. 확인 후 저장하면 배송지와 서버
+                  내역에 등록됩니다.
+                </Text>
+                {deviceDrafts.map((draft) => (
+                  <Pressable
+                    key={draft.localId}
+                    disabled={busy || !!uploadProgress}
+                    onPress={() => {
+                      if (!uploadRef.current) openDeviceDraft(draft);
+                    }}
+                  >
+                    <Card>
+                      <View style={s.between}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={s.h3}>
+                            {draft.drafts[0]?.recipient || draft.fileName}
+                          </Text>
+                          <Text style={s.muted}>
+                            {draft.serviceDate} · 확인·저장 대기
+                          </Text>
+                        </View>
+                        <ChevronRight size={20} color={C.muted} />
+                      </View>
+                    </Card>
+                  </Pressable>
+                ))}
+              </>
+            )}
             <Card>
               <View style={s.row}>
                 <FileSpreadsheet color={C.green} size={22} />
@@ -1359,9 +1604,17 @@ function Admin({
             <Text style={[s.section, { marginTop: 13 }]}>
               확인을 기다리는 업로드
             </Text>
-            {imports.filter((i) => i.status === "review").length ? (
+            {imports.filter(
+              (i) =>
+                i.status === "review" &&
+                !deviceDrafts.some((draft) => draft.remoteId === i.id),
+            ).length ? (
               imports
-                .filter((i) => i.status === "review")
+                .filter(
+                  (i) =>
+                    i.status === "review" &&
+                    !deviceDrafts.some((draft) => draft.remoteId === i.id),
+                )
                 .map((batch) => (
                   <Pressable
                     key={batch.id}
@@ -1903,10 +2156,28 @@ function Admin({
       <Sheet
         title={review?.fileName ?? "전표 확인"}
         visible={!!review}
-        onClose={() => setReview(null)}
+        animationType={review?.deviceLocalId ? "none" : "slide"}
+        onClose={() => {
+          void closeReview();
+        }}
       >
         {review && (
           <>
+            {review.deviceLocalId && (
+              <View style={{ marginBottom: 14 }}>
+                <Badge
+                  text={
+                    Number.isFinite(review.deviceRecognitionMs)
+                      ? `휴대폰 글자 인식 ${(review.deviceRecognitionMs! / 1000).toFixed(1)}초`
+                      : "휴대폰에서 글자 인식 완료"
+                  }
+                />
+                <Text style={[s.muted, { marginTop: 8 }]}>
+                  배송일 {review.serviceDate} · 서버 연결을 기다리지 않고 읽은
+                  내용입니다. 확인 후 저장해 주세요.
+                </Text>
+              </View>
+            )}
             <View style={st.demoBanner}>
               <ShieldCheck color={C.green} size={19} />
               <Text style={[s.muted, { flex: 1, color: C.green }]}>
@@ -2107,7 +2378,7 @@ function Admin({
                 {reviewError}
               </Text>
             ) : null}
-            {review.id &&
+            {(review.id || review.deviceLocalId) &&
               review.status !== "edit" &&
               review.status !== "committed" && (
                 <View style={{ marginTop: 10 }}>

@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join, basename, extname } from "node:path";
-import { randomInt, createHmac, timingSafeEqual } from "node:crypto";
+import { randomInt, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import ExcelJS from "exceljs";
 import { Store, id, today } from "./database.ts";
 import type { Session, Shipment, Company, Route } from "./types.ts";
@@ -21,6 +21,7 @@ import {
   recognizeReceipt,
   shutdownReceiptOcrPool,
   validateShipments,
+  validateReceiptImage,
 } from "./imports.ts";
 import { geocode } from "./geocoding.ts";
 import { seedDemo } from "./demo.ts";
@@ -520,6 +521,24 @@ export function createDispatchApp(
     assert(row, "업로드를 찾을 수 없습니다.", 404);
     res.json({ ...row, drafts: JSON.parse(row.drafts), storedName: undefined });
   });
+  const deviceReceiptKey = (req: Request, value: unknown) => {
+    assert(
+      typeof value === "string" && value.trim().length > 0 && value.length <= 128,
+      "전표 저장 요청 번호가 올바르지 않습니다. 전표를 다시 확인해 주세요.",
+      422,
+    );
+    return "device-receipt:" + createHash("sha256")
+      .update((req as AuthRequest).user.userId).update("\0").update(value.trim()).digest("hex");
+  };
+  const mappedDeviceReceipt = (key: string) => {
+    const setting = store.one("SELECT value FROM settings WHERE key=?", key);
+    if (!setting) return undefined;
+    let mapping: { importId?: string; digest?: string };
+    try { mapping = JSON.parse(setting.value); } catch { return undefined; }
+    if (!mapping || typeof mapping.importId !== "string" || typeof mapping.digest !== "string") return undefined;
+    const batch = store.one("SELECT * FROM imports WHERE id=?", mapping.importId);
+    return batch ? { batch, digest: mapping.digest } : undefined;
+  };
   app.post("/api/imports", admin, upload.single("file"), async (req, res) => {
     assert(req.file, "사진 또는 엑셀 파일을 선택해 주세요.");
     const file = req.file,
@@ -531,9 +550,40 @@ export function createDispatchApp(
     );
     let rawText = "",
       drafts;
-    if ([".xlsx", ".csv"].includes(extension))
+    let deviceKey: string | undefined;
+    let deviceDigest: string | undefined;
+    const deviceRecognition =
+      req.body.recognitionSource !== undefined ||
+      req.body.recognizedText !== undefined ||
+      req.body.deviceReceiptId !== undefined;
+    if ([".xlsx", ".csv"].includes(extension)) {
+      assert(!deviceRecognition, "기기 인식 결과는 전표 사진과 함께 보내 주세요.", 422);
       drafts = await parseSpreadsheet(file.buffer, file.originalname);
-    else {
+    } else if (deviceRecognition) {
+      const recognizedText = typeof req.body.recognizedText === "string"
+        ? req.body.recognizedText.replace(/\r\n?/g, "\n")
+        : null;
+      assert(
+        req.body.recognitionSource === "android-device" &&
+          recognizedText !== null &&
+          recognizedText.length <= 50_000 &&
+          recognizedText.trim().length > 0,
+        "전표 인식 결과가 올바르지 않습니다. 사진을 다시 촬영하거나 선택해 주세요.",
+        422,
+      );
+      // The Android app already read this image with its bundled recognizer.
+      // Preserve that text and the original photo without waiting for server OCR.
+      validateReceiptImage(file.buffer);
+      rawText = recognizedText.trim();
+      drafts = [parseReceipt(rawText)];
+      if (req.body.deviceReceiptId !== undefined) {
+        deviceKey = deviceReceiptKey(req, req.body.deviceReceiptId);
+        deviceDigest = createHash("sha256").update(JSON.stringify({
+          file: createHash("sha256").update(file.buffer).digest("hex"),
+          rawText, date,
+        })).digest("hex");
+      }
+    } else {
       const cancellation = new AbortController();
       const cancel = () => {
         if (!res.writableEnded) cancellation.abort();
@@ -559,33 +609,34 @@ export function createDispatchApp(
         res.off("close", cancel);
       }
     }
-    const importId = id(),
-      storedName = importId + extension,
-      fileName = Buffer.from(file.originalname, "latin1").toString("utf8");
-    writeFileSync(join(dataDir, "uploads", storedName), file.buffer, {
-      mode: 0o600,
-      flag: "wx",
+    let created = false;
+    const result = store.transaction(() => {
+      // The lookup and insert share a transaction so lost responses and even
+      // another API process cannot create a second import or original file.
+      const previous = deviceKey ? mappedDeviceReceipt(deviceKey) : undefined;
+      if (previous) {
+        assert(previous.digest === deviceDigest, "같은 전표 저장 요청에 다른 사진이나 인식 내용이 포함되어 있습니다. 새 전표로 다시 확인해 주세요.", 409);
+        return {
+          id: previous.batch.id, fileName: previous.batch.fileName,
+          rawText: previous.batch.rawText, drafts: JSON.parse(previous.batch.drafts),
+          serviceDate: previous.batch.serviceDate, status: previous.batch.status,
+        };
+      }
+      const importId = id(),
+        storedName = importId + extension,
+        fileName = Buffer.from(file.originalname, "latin1").toString("utf8");
+      writeFileSync(join(dataDir, "uploads", storedName), file.buffer, { mode: 0o600, flag: "wx" });
+      store.run(
+        "INSERT INTO imports(id,fileName,storedName,mime,rawText,drafts,serviceDate,createdAt) VALUES(?,?,?,?,?,?,?,?)",
+        importId, fileName, storedName, file.mimetype, rawText,
+        JSON.stringify(drafts), date, new Date().toISOString(),
+      );
+      if (deviceKey) store.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", deviceKey, JSON.stringify({ importId, digest: deviceDigest }));
+      created = true;
+      return { id: importId, fileName, rawText, drafts, serviceDate: date, status: "review" };
     });
-    store.run(
-      "INSERT INTO imports(id,fileName,storedName,mime,rawText,drafts,serviceDate,createdAt) VALUES(?,?,?,?,?,?,?,?)",
-      importId,
-      fileName,
-      storedName,
-      file.mimetype,
-      rawText,
-      JSON.stringify(drafts),
-      date,
-      new Date().toISOString(),
-    );
-    notify("changed");
-    res.status(201).json({
-      id: importId,
-      fileName,
-      rawText,
-      drafts,
-      serviceDate: date,
-      status: "review",
-    });
+    if (created) notify("changed");
+    res.status(201).json(result);
   });
   const insertShipment = (
     s: any,
@@ -609,9 +660,26 @@ export function createDispatchApp(
   app.post("/api/imports/:id/commit", admin, (req, res) => {
     const batch = store.one("SELECT * FROM imports WHERE id=?", req.params.id);
     assert(batch, "업로드를 찾을 수 없습니다.", 404);
-    assert(batch.status === "review", "이미 등록한 전표입니다.", 409);
+    const commitDeviceKey = req.body.deviceReceiptId !== undefined
+      ? deviceReceiptKey(req, req.body.deviceReceiptId)
+      : undefined;
+    if (!commitDeviceKey) assert(batch.status === "review", "이미 등록한 전표입니다.", 409);
     const rows = validateShipments(req.body.rows);
+    let committed = false;
+    let count = rows.length;
     store.transaction(() => {
+      const current = store.one("SELECT * FROM imports WHERE id=?", batch.id);
+      assert(current, "업로드를 찾을 수 없습니다.", 404);
+      if (commitDeviceKey) {
+        const previous = mappedDeviceReceipt(commitDeviceKey);
+        assert(previous?.batch.id === batch.id, "전표 저장 요청 번호가 해당 전표와 일치하지 않습니다.", 409);
+        if (current.status === "committed") {
+          assert(JSON.stringify(rows) === JSON.stringify(JSON.parse(current.drafts)), "이미 저장한 전표와 수정 내용이 다릅니다. 배송 내역에서 확인해 주세요.", 409);
+          count = current.count;
+          return;
+        }
+      }
+      assert(current.status === "review", "이미 등록한 전표입니다.", 409);
       for (const row of rows) insertShipment(row, batch.serviceDate, batch.id);
       store.run(
         "UPDATE imports SET status=?,count=?,drafts=? WHERE id=?",
@@ -620,9 +688,10 @@ export function createDispatchApp(
         JSON.stringify(rows),
         batch.id,
       );
+      committed = true;
     });
-    notify("changed");
-    res.status(201).json({ count: rows.length });
+    if (committed) notify("changed");
+    res.status(201).json({ count });
   });
   app.get("/api/imports/:id/original", admin, (request, res) => {
     const req = request as AuthRequest,
@@ -763,6 +832,7 @@ export function createDispatchApp(
       date,
       company: store.company(),
       mapSettings: store.mapSettings(),
+      receiptCapabilities: { deviceText: true, maxTextLength: 50_000 },
       demo:
         store.one("SELECT value FROM settings WHERE key=?", "demo")?.value ===
         "true",
