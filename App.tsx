@@ -93,6 +93,7 @@ import type { DriverAutomation } from "./src/driverAutomation";
 import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
 import KeyboardViewport from "./src/KeyboardViewport";
+import { createImportForm } from "./src/importUpload";
 import RouteOverview from "./src/RouteOverview";
 import AdminMapOverview, { MAP_ROUTE_COLORS } from "./src/AdminMapOverview";
 import DeliveryItems, { CargoSummary } from "./src/DeliveryItems";
@@ -690,30 +691,7 @@ function Admin({
         if (result.canceled) return;
         asset = result.assets[0];
       }
-      const form = new FormData();
-      let name = asset.name ?? asset.fileName ?? "receipt.jpg";
-      if (kind !== "excel") {
-        // iPhone may retain the original HEIC name after exporting a compatible JPEG.
-        const extension = asset.uri
-          .split("?")[0]
-          .match(/\.(jpe?g|png|webp)$/i)?.[1];
-        if (extension) name = name.replace(/\.[^.]+$/, "") + "." + extension;
-      }
-      if (Platform.OS === "web") {
-        const blob =
-          asset.file ?? (await fetch(asset.uri).then((r) => r.blob()));
-        form.append("file", blob, name);
-      } else
-        form.append("file", {
-          uri: asset.uri,
-          name,
-          type:
-            asset.mimeType ??
-            (kind === "excel"
-              ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              : "image/jpeg"),
-        } as any);
-      form.append("serviceDate", date);
+      const form = await createImportForm(asset, kind, date);
       setReview(await api("/api/imports", { method: "POST", body: form }));
       await refresh();
     });

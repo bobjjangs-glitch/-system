@@ -58,13 +58,23 @@ export async function api<T = any>(
   if (options.body && !(options.body instanceof FormData))
     headers["Content-Type"] = "application/json";
   let response: Response;
+  const signal = options.signal ?? AbortSignal.timeout(120000);
   try {
     response = await fetch(API_URL + path, {
       ...options,
       headers: { ...headers, ...options.headers },
-      signal: options.signal ?? AbortSignal.timeout(120000),
+      signal,
     });
   } catch {
+    if (signal.aborted) {
+      throw new Error(
+        signal.reason?.name === "TimeoutError"
+          ? path === "/api/imports"
+            ? "전표 처리 시간이 초과됐습니다. 업로드 내역을 확인한 뒤 다시 시도해 주세요."
+            : "서버 응답 시간이 초과됐습니다. 잠시 후 다시 시도해 주세요."
+          : "요청이 취소됐습니다. 다시 시도해 주세요.",
+      );
+    }
     throw new Error("서버에 연결할 수 없습니다. 연결 상태를 확인해 주세요.");
   }
   const value = await response
