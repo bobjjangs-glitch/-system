@@ -6,7 +6,7 @@ import { rateLimit } from "express-rate-limit";
 import multer from "multer";
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve, join, basename, extname } from "node:path";
 import { randomInt, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import ExcelJS from "exceljs";
@@ -16,7 +16,6 @@ import { isPoint } from "./types.ts";
 import { planDispatch, estimateRoute, orderStops, routePlanning, resolveDeparture } from "./routing.ts";
 import { trafficRoutingStatus } from "./naverDirections.ts";
 import {
-  parseReceipt,
   parseSpreadsheet,
   recognizeReceipt,
   shutdownReceiptOcrPool,
@@ -26,6 +25,9 @@ import {
 import { geocode } from "./geocoding.ts";
 import { seedDemo } from "./demo.ts";
 import { createMapDocument } from "../src/mapDocument.ts";
+import { extractReceipt } from "../src/receiptText.ts";
+import { normalizeReceiptLayout } from "../src/receiptLayout.ts";
+import type { ReceiptLayout } from "../src/receiptText.ts";
 
 type AuthRequest = Request & { user: Session; token: string };
 class AppError extends Error {
@@ -555,7 +557,13 @@ export function createDispatchApp(
     const deviceRecognition =
       req.body.recognitionSource !== undefined ||
       req.body.recognizedText !== undefined ||
+      req.body.recognizedLayout !== undefined ||
       req.body.deviceReceiptId !== undefined;
+    const company = store.company();
+    const receiptContext = {
+      supplierName: company.name,
+      supplierAddress: company.address,
+    };
     if ([".xlsx", ".csv"].includes(extension)) {
       assert(!deviceRecognition, "기기 인식 결과는 전표 사진과 함께 보내 주세요.", 422);
       drafts = await parseSpreadsheet(file.buffer, file.originalname);
@@ -573,14 +581,25 @@ export function createDispatchApp(
       );
       // The Android app already read this image with its bundled recognizer.
       // Preserve that text and the original photo without waiting for server OCR.
+      let layout: ReceiptLayout | undefined;
+      if (req.body.recognizedLayout !== undefined) {
+        try {
+          if (typeof req.body.recognizedLayout !== "string") throw new Error("Invalid layout field");
+          layout = normalizeReceiptLayout(JSON.parse(req.body.recognizedLayout));
+        } catch {
+          throw new AppError("전표 인식 위치 정보가 올바르지 않습니다. 사진을 다시 촬영하거나 선택해 주세요.", 422);
+        }
+      }
       validateReceiptImage(file.buffer);
       rawText = recognizedText.trim();
-      drafts = [parseReceipt(rawText)];
+      drafts = [extractReceipt(rawText, layout, receiptContext).draft];
       if (req.body.deviceReceiptId !== undefined) {
         deviceKey = deviceReceiptKey(req, req.body.deviceReceiptId);
         deviceDigest = createHash("sha256").update(JSON.stringify({
           file: createHash("sha256").update(file.buffer).digest("hex"),
           rawText, date,
+          // Omit absent layout so pending requests from older APKs keep their digest.
+          ...(layout ? { layout } : {}),
         })).digest("hex");
       }
     } else {
@@ -601,7 +620,7 @@ export function createDispatchApp(
           "전표의 글자를 읽지 못했습니다. 글자가 선명하게 나오도록 다시 촬영하거나 배송지를 직접 입력해 주세요.",
           422,
         );
-        drafts = [parseReceipt(rawText)];
+        drafts = [extractReceipt(rawText, undefined, receiptContext).draft];
       } catch (error) {
         if (cancellation.signal.aborted || res.destroyed) return;
         throw error;
@@ -692,6 +711,41 @@ export function createDispatchApp(
     });
     if (committed) notify("changed");
     res.status(201).json({ count });
+  });
+  app.delete("/api/imports/:id", admin, (req, res) => {
+    const deleted = store.transaction(() => {
+      const batch = store.one("SELECT * FROM imports WHERE id=?", req.params.id);
+      assert(batch, "업로드를 찾을 수 없습니다.", 404);
+      assert(!routingBusy, "배차를 계산 중입니다. 잠시 후 다시 삭제해 주세요.", 409);
+      assert(
+        ["review", "committed"].includes(batch.status) &&
+          !store.one(
+            "SELECT id FROM shipments WHERE importId=? AND (status<>'pending' OR routeId IS NOT NULL) LIMIT 1",
+            batch.id,
+          ),
+        "이미 배차했거나 운행·배송 처리한 전표는 삭제할 수 없습니다. 미배차 전표만 삭제해 주세요.",
+        409,
+      );
+      const deletedShipments = Number(store.run("DELETE FROM shipments WHERE importId=?", batch.id).changes);
+      store.run("DELETE FROM imports WHERE id=?", batch.id);
+      for (const setting of store.all("SELECT key,value FROM settings WHERE key GLOB 'device-receipt:*'")) {
+        let mapping;
+        try { mapping = JSON.parse(setting.value); } catch { continue; }
+        if (mapping?.importId === batch.id)
+          store.run("DELETE FROM settings WHERE key=?", setting.key);
+      }
+      return { storedName: batch.storedName, deletedShipments };
+    });
+    // Commit the logical deletion first: a missing or inaccessible original must
+    // not leave a deleted receipt visible or make a retry delete another record.
+    try {
+      unlinkSync(join(dataDir, "uploads", basename(deleted.storedName)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        console.error("전표 원본 파일을 삭제하지 못했습니다.");
+    }
+    notify("changed");
+    res.json({ ok: true, deletedShipments: deleted.deletedShipments });
   });
   app.get("/api/imports/:id/original", admin, (request, res) => {
     const req = request as AuthRequest,
@@ -806,12 +860,13 @@ export function createDispatchApp(
   });
   app.delete("/api/shipments/:id", admin, (req, res) => {
     const row = store.one(
-      "SELECT status FROM shipments WHERE id=?",
+      "SELECT status,routeId FROM shipments WHERE id=?",
       req.params.id,
     );
     assert(row, "배송지를 찾을 수 없습니다.", 404);
+    assert(!routingBusy, "배차를 계산 중입니다. 잠시 후 다시 삭제해 주세요.", 409);
     assert(
-      row.status === "pending",
+      row.status === "pending" && row.routeId === null,
       "미배차 배송지만 삭제할 수 있습니다.",
       409,
     );

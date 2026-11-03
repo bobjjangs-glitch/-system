@@ -2,6 +2,8 @@ import { Directory, File, Paths } from "expo-file-system";
 import type { ShipmentInput } from "../server/types";
 import { API_URL } from "./api";
 import type { ImportUploadAsset } from "./importUpload";
+import type { ReceiptLayout } from "./receiptText";
+import { normalizeReceiptLayout } from "./receiptLayout";
 
 export type DeviceReceiptDraft = {
   localId: string;
@@ -9,6 +11,7 @@ export type DeviceReceiptDraft = {
   serviceDate: string;
   fileName: string;
   rawText: string;
+  layout?: ReceiptLayout;
   drafts: ShipmentInput[];
   asset: ImportUploadAsset;
   remoteId?: string;
@@ -147,7 +150,9 @@ function validated(
     !Number.isFinite(Date.parse(draft.createdAt))
   )
     throw invalidDraft();
-  return draft;
+  return draft.layout === undefined
+    ? draft
+    : { ...draft, layout: normalizeReceiptLayout(draft.layout) };
 }
 
 async function readDraft(
@@ -176,6 +181,10 @@ async function writeDraft(draft: DeviceReceiptDraft) {
     serviceDate: draft.serviceDate,
     fileName: draft.fileName,
     rawText: draft.rawText,
+    layout:
+      draft.layout === undefined && previous?.layout === undefined
+        ? undefined
+        : normalizeReceiptLayout(draft.layout ?? previous?.layout),
     createdAt: draft.createdAt,
     remoteId: draft.remoteId ?? previous?.remoteId,
     asset: {
@@ -226,7 +235,10 @@ export async function createDeviceReceiptDraft(
   serviceDate: string,
   rawText: string,
   drafts: ShipmentInput[],
+  layout?: ReceiptLayout,
 ): Promise<DeviceReceiptDraft> {
+  const normalizedLayout =
+    layout === undefined ? undefined : normalizeReceiptLayout(layout);
   const random = Array.from({ length: 4 }, () =>
     Math.floor(Math.random() * 65536)
       .toString(16)
@@ -251,6 +263,7 @@ export async function createDeviceReceiptDraft(
       serviceDate,
       fileName,
       rawText,
+      layout: normalizedLayout,
       drafts,
       asset: {
         uri: image.uri,

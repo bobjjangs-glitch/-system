@@ -1,5 +1,7 @@
 import { NativeModules, Platform } from "react-native";
 import { File, Paths } from "expo-file-system";
+import type { ReceiptLayoutLine } from "./receiptText";
+import { normalizeReceiptLayout } from "./receiptLayout";
 
 export type DeviceReceiptResult = {
   text: string;
@@ -7,6 +9,7 @@ export type DeviceReceiptResult = {
   imageUri: string;
   width: number;
   height: number;
+  lines?: ReceiptLayoutLine[];
 };
 type OcrBridge = {
   recognize: (uri: string) => Promise<DeviceReceiptResult>;
@@ -93,6 +96,21 @@ export async function recognizeDeviceReceipt(
   ) {
     if (result.imageUri) await removeDeviceOcrCache(result.imageUri);
     throw new Error("전표 인식 결과를 읽지 못했습니다. 다시 촬영해 주세요.");
+  }
+  // A previous APK may still return text only. New captures retain word
+  // positions so table columns are read together rather than as loose numbers.
+  if (result.lines !== undefined) {
+    try {
+      result.lines = normalizeReceiptLayout({
+        width: result.width,
+        height: result.height,
+        lines: result.lines,
+      }).lines;
+    } catch {
+      // Text recognition succeeded; a malformed optional layout must not lose
+      // the receipt. The conservative text parser can still populate fields.
+      result.lines = undefined;
+    }
   }
   return result;
 }

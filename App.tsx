@@ -104,7 +104,9 @@ import {
   removeDeviceOcrCache,
   warmUpDeviceReceiptOcr,
 } from "./src/deviceReceiptOcr";
-import { parseReceipt } from "./src/receiptText";
+import { extractReceipt } from "./src/receiptText";
+import type { ReceiptLayout } from "./src/receiptText";
+import { mergeReceiptAutofill } from "./src/receiptAutofill";
 import {
   createDeviceReceiptDraft,
   listDeviceReceiptDrafts,
@@ -166,6 +168,8 @@ type ImportBatch = {
   id?: string;
   deviceLocalId?: string;
   deviceRecognitionMs?: number;
+  recognitionWarnings?: string[];
+  filledFields?: string[];
   fileName: string;
   rawText?: string;
   drafts: ShipmentInput[];
@@ -174,6 +178,7 @@ type ImportBatch = {
   createdAt?: string;
   count?: number;
 };
+type ReceiptDeleteTarget = ImportBatch & { shipment?: Shipment };
 const statusName: Record<string, string> = {
   pending: "미배차",
   assigned: "배송 대기",
@@ -627,6 +632,13 @@ function Admin({
     startedAt: number;
   } | null>(null);
   const [reviewError, setReviewError] = useState("");
+  const [receiptDelete, setReceiptDelete] =
+    useState<ReceiptDeleteTarget | null>(null);
+  const [receiptDeleting, setReceiptDeleting] = useState(false);
+  const [receiptDeleteError, setReceiptDeleteError] = useState("");
+  const receiptDeleteRef = useRef<ReceiptDeleteTarget | null>(null);
+  const receiptDeletingRef = useRef(false);
+  const [showReceiptText, setShowReceiptText] = useState(false);
   const [deviceDrafts, setDeviceDrafts] = useState<DeviceReceiptDraft[]>([]);
   const deviceDraftsRef = useRef<DeviceReceiptDraft[]>([]);
   const reviewSaving = useRef(false);
@@ -640,14 +652,33 @@ function Admin({
     deviceDraftsRef.current = all;
     if (mounted.current) setDeviceDrafts(all);
   };
+  const withReceiptRecognition = (batch: ImportBatch): ImportBatch => {
+    if (!batch.rawText || !/\.(?:jpe?g|png|webp)$/i.test(batch.fileName))
+      return batch;
+    const extraction = extractReceipt(batch.rawText, undefined, {
+      supplierName: data?.company.name,
+      supplierAddress: data?.company.address,
+    });
+    return {
+      ...batch,
+      recognitionWarnings: extraction.warnings,
+      filledFields: extraction.filledFields,
+    };
+  };
   const openDeviceDraft = (
     draft: DeviceReceiptDraft,
     recognitionMs?: number,
   ) => {
+    const extraction = extractReceipt(draft.rawText, draft.layout, {
+      supplierName: data?.company.name,
+      supplierAddress: data?.company.address,
+    });
     const batch: ImportBatch = {
       id: draft.remoteId,
       deviceLocalId: draft.localId,
       deviceRecognitionMs: recognitionMs,
+      recognitionWarnings: extraction.warnings,
+      filledFields: extraction.filledFields,
       fileName: draft.fileName,
       rawText: draft.rawText,
       drafts: draft.drafts,
@@ -688,6 +719,10 @@ function Admin({
     };
   }, []);
   useEffect(() => setReviewError(""), [review?.id, review?.fileName]);
+  useEffect(
+    () => setShowReceiptText(false),
+    [review?.deviceLocalId, review?.id, review?.fileName],
+  );
   const { width } = useWindowDimensions();
   const refresh = useCallback(async () => {
     const [board, batches] = await Promise.all([
@@ -754,7 +789,8 @@ function Admin({
   const pickUpload = async (kind: "camera" | "photo" | "excel") => {
     // State-based button disabling is not a lock: refreshes and rapid taps can
     // otherwise admit another photo before the first operation has finished.
-    if (uploadRef.current) return;
+    if (uploadRef.current || reviewSaving.current || receiptDeleteRef.current)
+      return;
     if (reviewRef.current) {
       tell("열려 있는 전표를 먼저 확인하거나 닫아 주세요.");
       return;
@@ -845,6 +881,17 @@ function Admin({
           recognizeDeviceReceipt(asset.uri, operation.controller.signal),
         );
         try {
+          const layout: ReceiptLayout | undefined = result.lines
+            ? {
+                width: result.width,
+                height: result.height,
+                lines: result.lines,
+              }
+            : undefined;
+          const extraction = extractReceipt(result.text, layout, {
+            supplierName: data?.company.name,
+            supplierAddress: data?.company.address,
+          });
           const processed = {
             ...asset,
             uri: result.imageUri,
@@ -861,7 +908,8 @@ function Admin({
               processed,
               date,
               result.text,
-              [parseReceipt(result.text)],
+              [extraction.draft],
+              layout,
             ).then((saved) => {
               if (operation.controller.signal.aborted)
                 void removeDeviceReceiptDraft(user.userId, saved.localId).catch(
@@ -922,7 +970,9 @@ function Admin({
           "전표 결과를 읽지 못했습니다. 업로드 내역에서 확인해 주세요.",
         );
       if (!operation.controller.signal.aborted && mounted.current) {
-        setReview(batch);
+        const recognized = withReceiptRecognition(batch);
+        reviewRef.current = recognized;
+        setReview(recognized);
         // The result is ready. Unrelated dashboard refresh must not keep the
         // review and next-photo controls blocked for another network round trip.
         refresh().catch((error) => {
@@ -952,7 +1002,8 @@ function Admin({
     }
   };
   const openStoredReview = async (id: string) => {
-    if (uploadRef.current) return;
+    if (uploadRef.current || reviewSaving.current || receiptDeleteRef.current)
+      return;
     const local = deviceDraftsRef.current.find(
       (draft) => draft.remoteId === id,
     );
@@ -961,7 +1012,16 @@ function Admin({
       return;
     }
     const batch = await api<ImportBatch>("/api/imports/" + id);
-    if (mounted.current && !uploadRef.current) setReview(batch);
+    if (
+      mounted.current &&
+      !uploadRef.current &&
+      !reviewSaving.current &&
+      !receiptDeleteRef.current
+    ) {
+      const recognized = withReceiptRecognition(batch);
+      reviewRef.current = recognized;
+      setReview(recognized);
+    }
   };
   const closeReview = async () => {
     if (reviewSaving.current) return;
@@ -988,6 +1048,41 @@ function Admin({
     }
     reviewRef.current = null;
     setReview(null);
+  };
+  const reapplyReceiptAutofill = async () => {
+    const batch = reviewRef.current;
+    if (
+      !batch?.rawText ||
+      batch.drafts.length !== 1 ||
+      reviewSaving.current ||
+      uploadRef.current
+    )
+      return;
+    const local = deviceDraftsRef.current.find(
+      (draft) => draft.localId === batch.deviceLocalId,
+    );
+    const extraction = extractReceipt(batch.rawText, local?.layout, {
+      supplierName: data?.company.name,
+      supplierAddress: data?.company.address,
+    });
+    const updated: ImportBatch = {
+      ...batch,
+      drafts: mergeReceiptAutofill(batch.drafts, extraction.draft),
+      recognitionWarnings: extraction.warnings,
+      filledFields: extraction.filledFields,
+    };
+    reviewRef.current = updated;
+    setReview(updated);
+    if (local) {
+      reviewSaving.current = true;
+      try {
+        const saved = { ...local, drafts: updated.drafts };
+        await saveDeviceReceiptDraft(saved);
+        rememberDeviceDraft(saved);
+      } finally {
+        reviewSaving.current = false;
+      }
+    }
   };
   const saveReview = async (nextPhoto = false) => {
     const batch = reviewRef.current;
@@ -1021,6 +1116,8 @@ function Admin({
           );
           form.append("recognitionSource", "android-device");
           form.append("recognizedText", local.rawText);
+          if (local.layout)
+            form.append("recognizedLayout", JSON.stringify(local.layout));
           form.append("deviceReceiptId", local.localId);
           const uploaded = await api<ImportBatch>("/api/imports", {
             method: "POST",
@@ -1095,6 +1192,110 @@ function Admin({
         return;
       }
       void pickUpload("camera");
+    }
+  };
+  const requestReceiptDelete = (batch: ReceiptDeleteTarget) => {
+    if (
+      busy ||
+      uploadRef.current ||
+      reviewSaving.current ||
+      receiptDeleteRef.current
+    )
+      return;
+    Keyboard.dismiss();
+    // Hold the same lock as saving until the confirmation is dismissed. A save
+    // must never recreate an upload while its original is being removed.
+    reviewSaving.current = true;
+    receiptDeleteRef.current = batch;
+    setReceiptDeleteError("");
+    setReceiptDelete(batch);
+  };
+  const cancelReceiptDelete = () => {
+    if (receiptDeletingRef.current) return;
+    receiptDeleteRef.current = null;
+    reviewSaving.current = false;
+    setReceiptDelete(null);
+    setReceiptDeleteError("");
+  };
+  const deleteReceipt = async () => {
+    const batch = receiptDeleteRef.current;
+    if (!batch || receiptDeletingRef.current || uploadRef.current) return;
+    receiptDeletingRef.current = true;
+    setReceiptDeleting(true);
+    setReceiptDeleteError("");
+    try {
+      if (batch.shipment) {
+        const shipment = batch.shipment;
+        if (shipment.status !== "pending" || shipment.routeId)
+          throw new Error("미배차 배송지만 삭제할 수 있습니다.");
+        await api("/api/shipments/" + shipment.id, { method: "DELETE" });
+        receiptDeleteRef.current = null;
+        reviewSaving.current = false;
+        if (mounted.current) {
+          setDetail((current) =>
+            current?.id === shipment.id ? null : current,
+          );
+          setReceiptDelete(null);
+          tell("미배차 배송지 1곳을 삭제했습니다.");
+          refresh().catch(() => {});
+        }
+        return;
+      }
+      const locals = deviceDraftsRef.current.filter(
+        (draft) =>
+          draft.localId === batch.deviceLocalId ||
+          (!!batch.id && draft.remoteId === batch.id),
+      );
+      const remoteId = batch.id ?? locals[0]?.remoteId;
+      let deletedShipments = 0;
+      if (remoteId) {
+        try {
+          const result = await api<{ ok: boolean; deletedShipments: number }>(
+            "/api/imports/" + remoteId,
+            { method: "DELETE" },
+          );
+          deletedShipments = result.deletedShipments;
+        } catch (error) {
+          // A lost successful response or an earlier cleanup failure can leave
+          // an owned local draft referring to an already deleted server upload.
+          if ((error as Error).message !== "업로드를 찾을 수 없습니다.")
+            throw error;
+        }
+      }
+      // Remote deletion must succeed before removing the recoverable local copy.
+      for (const draft of locals)
+        await removeDeviceReceiptDraft(user.userId, draft.localId);
+      const removedIds = new Set(locals.map((draft) => draft.localId));
+      deviceDraftsRef.current = deviceDraftsRef.current.filter(
+        (draft) => !removedIds.has(draft.localId),
+      );
+      const current = reviewRef.current;
+      if (
+        current &&
+        ((remoteId && current.id === remoteId) ||
+          (current.deviceLocalId && removedIds.has(current.deviceLocalId)))
+      ) {
+        reviewRef.current = null;
+        if (mounted.current) setReview(null);
+      }
+      receiptDeleteRef.current = null;
+      reviewSaving.current = false;
+      if (!mounted.current) return;
+      setDeviceDrafts(deviceDraftsRef.current);
+      setImports((previous) => previous.filter((item) => item.id !== remoteId));
+      setReceiptDelete(null);
+      setReviewError("");
+      tell(
+        deletedShipments
+          ? `전표 1건과 미배차 배송지 ${deletedShipments}곳을 삭제했습니다.`
+          : "전표 1건을 삭제했습니다.",
+      );
+      refresh().catch(() => {});
+    } catch (error) {
+      if (mounted.current) setReceiptDeleteError((error as Error).message);
+    } finally {
+      receiptDeletingRef.current = false;
+      if (mounted.current) setReceiptDeleting(false);
     }
   };
   const download = async (path: string, name: string) => {
@@ -1556,14 +1757,13 @@ function Admin({
                   내역에 등록됩니다.
                 </Text>
                 {deviceDrafts.map((draft) => (
-                  <Pressable
-                    key={draft.localId}
-                    disabled={busy || !!uploadProgress}
-                    onPress={() => {
-                      if (!uploadRef.current) openDeviceDraft(draft);
-                    }}
-                  >
-                    <Card>
+                  <Card key={draft.localId}>
+                    <Pressable
+                      disabled={busy || !!uploadProgress || !!receiptDelete}
+                      onPress={() => {
+                        if (!uploadRef.current) openDeviceDraft(draft);
+                      }}
+                    >
                       <View style={s.between}>
                         <View style={{ flex: 1 }}>
                           <Text style={s.h3}>
@@ -1575,8 +1775,28 @@ function Admin({
                         </View>
                         <ChevronRight size={20} color={C.muted} />
                       </View>
-                    </Card>
-                  </Pressable>
+                    </Pressable>
+                    <View style={{ marginTop: 12 }}>
+                      <Button
+                        title="전표 삭제"
+                        danger
+                        secondary
+                        small
+                        icon={Trash2}
+                        disabled={busy || !!uploadProgress || !!receiptDelete}
+                        onPress={() =>
+                          requestReceiptDelete({
+                            id: draft.remoteId,
+                            deviceLocalId: draft.localId,
+                            fileName: draft.fileName,
+                            drafts: draft.drafts,
+                            serviceDate: draft.serviceDate,
+                            status: "device-local",
+                          })
+                        }
+                      />
+                    </View>
+                  </Card>
                 ))}
               </>
             )}
@@ -1616,12 +1836,11 @@ function Admin({
                     !deviceDrafts.some((draft) => draft.remoteId === i.id),
                 )
                 .map((batch) => (
-                  <Pressable
-                    key={batch.id}
-                    disabled={!!uploadProgress}
-                    onPress={() => run(() => openStoredReview(batch.id!))}
-                  >
-                    <Card>
+                  <Card key={batch.id}>
+                    <Pressable
+                      disabled={busy || !!uploadProgress || !!receiptDelete}
+                      onPress={() => run(() => openStoredReview(batch.id!))}
+                    >
                       <View style={s.between}>
                         <View style={s.row}>
                           <ClipboardList size={20} color={C.green} />
@@ -1634,8 +1853,19 @@ function Admin({
                         </View>
                         <ChevronRight size={20} color={C.muted} />
                       </View>
-                    </Card>
-                  </Pressable>
+                    </Pressable>
+                    <View style={{ marginTop: 12 }}>
+                      <Button
+                        title="전표 삭제"
+                        danger
+                        secondary
+                        small
+                        icon={Trash2}
+                        disabled={busy || !!uploadProgress || !!receiptDelete}
+                        onPress={() => requestReceiptDelete(batch)}
+                      />
+                    </View>
+                  </Card>
                 ))
             ) : (
               <Text style={s.muted}>새 전표를 업로드하면 여기에 표시돼요.</Text>
@@ -2084,7 +2314,7 @@ function Admin({
                     tone={batch.status === "committed" ? "green" : "amber"}
                   />
                 </View>
-                <View style={[s.row, { marginTop: 13 }]}>
+                <View style={[s.row, { marginTop: 13, flexWrap: "wrap" }]}>
                   {batch.status === "review" && (
                     <Button
                       title="내용 확인"
@@ -2106,6 +2336,15 @@ function Admin({
                         await download(result.path, batch.fileName);
                       })
                     }
+                  />
+                  <Button
+                    title="전표 삭제"
+                    danger
+                    secondary
+                    small
+                    icon={Trash2}
+                    disabled={busy || !!uploadProgress || !!receiptDelete}
+                    onPress={() => requestReceiptDelete(batch)}
                   />
                 </View>
               </Card>
@@ -2185,6 +2424,46 @@ function Admin({
                 배송지로 등록되지 않아요.
               </Text>
             </View>
+            {!!review.filledFields?.length && (
+              <Text style={[s.muted, { marginBottom: 12, color: C.green }]}>
+                자동 입력:{" "}
+                {review.filledFields
+                  .map(
+                    (field) =>
+                      ({
+                        recipient: "거래처",
+                        address: "배송주소",
+                        phone: "연락처",
+                        items: "물품·수량",
+                      })[field] ?? field,
+                  )
+                  .join(" · ")}
+              </Text>
+            )}
+            {review.recognitionWarnings?.map((warning) => (
+              <Text
+                key={warning}
+                style={[s.muted, { marginBottom: 8, color: C.red }]}
+              >
+                {warning}
+              </Text>
+            ))}
+            {!!review.rawText &&
+              review.drafts.length === 1 &&
+              review.status !== "edit" && (
+                <View style={{ marginBottom: 12 }}>
+                  <Button
+                    title="빈 항목 자동 채우기"
+                    secondary
+                    icon={RefreshCw}
+                    disabled={busy || !!uploadProgress}
+                    onPress={() => run(reapplyReceiptAutofill)}
+                  />
+                  <Text style={[s.muted, { marginTop: 6 }]}>
+                    이미 입력한 내용은 유지하고 인식 원문에서 빈칸만 채워요.
+                  </Text>
+                </View>
+              )}
             <View style={{ marginBottom: 16 }}>
               <Button
                 title="좌표 없는 주소 전체 확인"
@@ -2214,16 +2493,6 @@ function Admin({
                 }
               />
             </View>
-            {review.rawText ? (
-              <Card>
-                <Text style={[s.h3, { marginBottom: 9 }]}>
-                  사진에서 인식한 원문
-                </Text>
-                <Text selectable style={s.muted}>
-                  {review.rawText}
-                </Text>
-              </Card>
-            ) : null}
             {review.drafts.map((row, index) => (
               <Card key={index}>
                 <View style={[s.between, { marginBottom: 17 }]}>
@@ -2231,12 +2500,14 @@ function Admin({
                   {review.drafts.length > 1 && (
                     <Pressable
                       accessibilityLabel="이 배송지 제외"
-                      onPress={() =>
+                      disabled={busy || !!receiptDelete}
+                      onPress={() => {
+                        if (reviewSaving.current) return;
                         setReview({
                           ...review,
                           drafts: review.drafts.filter((_, i) => i !== index),
-                        })
-                      }
+                        });
+                      }}
                     >
                       <Trash2 size={17} color={C.red} />
                     </Pressable>
@@ -2360,6 +2631,28 @@ function Admin({
                 />
               </Card>
             ))}
+            {!!review.rawText && (
+              <Card>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    showReceiptText ? "인식 원문 접기" : "인식 원문 보기"
+                  }
+                  onPress={() => setShowReceiptText((shown) => !shown)}
+                  style={s.between}
+                >
+                  <Text style={s.h3}>
+                    {showReceiptText ? "인식 원문 접기" : "인식 원문 보기"}
+                  </Text>
+                  <ChevronRight color={C.muted} size={18} />
+                </Pressable>
+                {showReceiptText && (
+                  <Text selectable style={[s.muted, { marginTop: 12 }]}>
+                    {review.rawText}
+                  </Text>
+                )}
+              </Card>
+            )}
             <Text style={[s.muted, { marginBottom: 15 }]}>
               좌표가 없는 배송지도 저장할 수 있어요. 추천 배차 전에는 모든
               주소의 좌표 확인이 필요합니다.
@@ -2406,6 +2699,19 @@ function Admin({
                 />
               </View>
             )}
+            {review.status !== "edit" &&
+              (review.id || review.deviceLocalId) && (
+                <View style={{ marginTop: 18 }}>
+                  <Button
+                    title="이 전표 삭제"
+                    danger
+                    secondary
+                    icon={Trash2}
+                    disabled={busy || !!uploadProgress || !!receiptDelete}
+                    onPress={() => requestReceiptDelete(review)}
+                  />
+                </View>
+              )}
           </>
         )}
       </Sheet>
@@ -2764,6 +3070,25 @@ function Admin({
                 미배송 사유: {detail.failureReason}
               </Text>
             )}
+            {detail.status === "pending" && !detail.routeId && (
+              <View style={{ marginTop: 20 }}>
+                <Button
+                  title="이 배송지 삭제"
+                  danger
+                  secondary
+                  icon={Trash2}
+                  disabled={busy || !!uploadProgress || !!receiptDelete}
+                  onPress={() =>
+                    requestReceiptDelete({
+                      fileName: detail.recipient,
+                      drafts: [detail],
+                      serviceDate: detail.serviceDate,
+                      shipment: detail,
+                    })
+                  }
+                />
+              </View>
+            )}
             {detail.status === "assigned" &&
               data.routes.find((r) => r.id === detail.routeId)?.status ===
                 "planned" && (
@@ -2797,6 +3122,62 @@ function Admin({
                     ))}
                 </>
               )}
+          </>
+        )}
+      </Sheet>
+      <Sheet
+        title={receiptDelete?.shipment ? "배송지 삭제 확인" : "전표 삭제 확인"}
+        visible={!!receiptDelete}
+        animationType="fade"
+        onClose={cancelReceiptDelete}
+      >
+        {receiptDelete && (
+          <>
+            <Text style={[s.h3, { marginBottom: 12 }]}>
+              {receiptDelete.fileName}
+            </Text>
+            <Text style={[s.muted, { marginBottom: 14 }]}>
+              {receiptDelete.shipment
+                ? "미배차 배송지 1곳을 삭제합니다. 업로드한 전표 원본과 다른 배송지는 보관됩니다."
+                : receiptDelete.status === "committed"
+                  ? `전표 1건과 연결된 미배차 배송지 최대 ${receiptDelete.count ?? receiptDelete.drafts.length}곳을 함께 삭제합니다.`
+                  : receiptDelete.id
+                    ? "전표 1건의 업로드 원본과 검토 내역을 삭제합니다."
+                    : "기기에 보관한 전표 1건과 앱 전용 사진 복사본을 삭제합니다. 휴대폰 갤러리의 원본은 보관됩니다."}
+            </Text>
+            {(receiptDelete.id || receiptDelete.shipment) && (
+              <Text style={[s.muted, { marginBottom: 14 }]}>
+                배차·운행·배송 처리한 내역은 삭제할 수 없습니다.
+              </Text>
+            )}
+            <Text style={{ color: C.red, marginBottom: 18 }}>
+              삭제한 내용은 되돌릴 수 없습니다.
+            </Text>
+            {receiptDeleteError ? (
+              <Text
+                accessibilityRole="alert"
+                style={{ color: C.red, marginBottom: 18 }}
+              >
+                {receiptDeleteError}
+              </Text>
+            ) : null}
+            <Button
+              title={receiptDeleting ? "삭제 중…" : "삭제하기"}
+              danger
+              icon={Trash2}
+              disabled={receiptDeleting}
+              onPress={() => {
+                void deleteReceipt();
+              }}
+            />
+            <View style={{ marginTop: 10 }}>
+              <Button
+                title="취소"
+                secondary
+                disabled={receiptDeleting}
+                onPress={cancelReceiptDelete}
+              />
+            </View>
           </>
         )}
       </Sheet>
