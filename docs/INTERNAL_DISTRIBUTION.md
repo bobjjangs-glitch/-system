@@ -35,9 +35,22 @@ eas build --platform android --profile internal
 eas build --platform ios --profile internal
 ```
 
+현재 Render 테스트 서버에 연결하는 iPhone 설치용 빌드는 다음 프로필을 사용합니다. 이 프로필은 서버 주소를 원격 빌드에 명시하며 `ios.simulator=false`로 실제 iPhone을 대상으로 합니다. 시뮬레이터 파일이나 JavaScript export는 iPhone 설치용 IPA가 아닙니다.
+
+```bash
+eas device:create
+eas build --platform ios --profile ios-internal-test
+```
+
+Expo 로그인, 본인 소유 Expo 프로젝트 연결, Apple Developer Program의 활성 Team, 배포 인증서와 등록된 iPhone을 포함한 Ad Hoc 프로파일이 필요합니다. Apple 계정 비밀번호·2단계 인증 코드를 채팅에 보내지 말고 소유자의 공식 로그인 절차에서 입력합니다. EAS가 제공하는 macOS 클라우드 빌드를 사용하면 개인 Mac이 없어도 빌드할 수 있습니다. 무료 큐 제공 여부와 빌드 비용은 해당 Expo 계정 플랜에서 확인합니다.
+
+일반 IPA를 닷홈에 올리는 것만으로 iPhone에 설치되지 않습니다. 서명된 빌드가 완료되면 EAS의 HTTPS 내부 설치 링크를 등록된 iPhone에서 엽니다. 이 기기 등록 방식에는 공개 App Store 출시가 필요 없습니다.
+
 5. 빌드 결과의 내부 설치 링크를 등록된 직원에게 전달합니다. 등록되지 않은 iPhone에는 설치되지 않습니다. 새 기기를 추가하면 프로파일 갱신과 재빌드 또는 재서명이 필요합니다.
 
-Apple의 기기 등록 한도·인증서·프로비저닝 프로파일의 유효기간을 관리해야 합니다. 일반 IPA 파일을 임의의 링크로 제공하는 것만으로 모든 iPhone에 설치할 수는 없습니다. 현재 Apple Developer 계정이 없어 iPhone용 서명·설치는 진행하지 않았습니다.
+Apple의 기기 등록 한도·인증서·프로비저닝 프로파일의 유효기간을 관리해야 합니다. 일반 IPA 파일을 임의의 링크로 제공하는 것만으로 모든 iPhone에 설치할 수는 없습니다. 이 클라우드에서는 Expo 로그인·Apple 계정 연결·기기 등록을 아직 수행하지 않아 iPhone용 서명·IPA 생성·설치는 진행하지 않았습니다.
+
+1.2.1 소스에서 `ios-internal-test` 프로필을 공식 EAS 설정 파서로 검증했고, iOS Hermes 번들 export와 위치 권한 설명·백그라운드 모드·외부 지도 스킴 설정 검증을 통과했습니다. 이 검증에는 Xcode 컴파일·서명이나 실기기 GPS 동작이 포함되지 않습니다.
 
 직원 수가 크게 늘어날 경우 Apple Business Manager의 비공개 Custom App 배포도 검토할 수 있습니다. 이는 별도 등록·심사 절차가 있는 방식입니다.
 

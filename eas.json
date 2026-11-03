@@ -15,6 +15,13 @@
         "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=x86_64"
       }
     },
+    "ios-internal-test": {
+      "extends": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://bareun-dispatch-test.onrender.com"
+      },
+      "ios": { "simulator": false }
+    },
     "internal": {
       "distribution": "internal",
       "android": { "buildType": "apk" },
