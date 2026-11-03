@@ -1,9 +1,8 @@
 import ExcelJS from "exceljs";
 import { Readable } from "node:stream";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { createWorker } from "tesseract.js";
-import { mkdtemp, copyFile, rm } from "node:fs/promises";
+import { fork } from "node:child_process";
+import { join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { ShipmentInput } from "./types.ts";
 
@@ -145,41 +144,176 @@ export function parseReceipt(rawText: string): ShipmentInput {
     lng: null,
   };
 }
-let ocrQueue: Promise<unknown> = Promise.resolve();
-export async function recognizeReceipt(buffer: Buffer): Promise<string> {
-  const run = async () => {
-    const require = createRequire(import.meta.url);
-    const kor = dirname(require.resolve("@tesseract.js-data/kor/package.json"));
-    const eng = dirname(require.resolve("@tesseract.js-data/eng/package.json"));
-    const langDir = await mkdtemp(join(tmpdir(), "bareun-ocr-"));
-    let worker: Awaited<ReturnType<typeof createWorker>> | undefined;
-    try {
-      await Promise.all(
-        ["kor", "eng"].map((code) =>
-          copyFile(
-            join(
-              code === "kor" ? kor : eng,
-              "4.0.0_best_int",
-              code + ".traineddata.gz",
-            ),
-            join(langDir, code + ".traineddata.gz"),
-          ),
-        ),
-      );
-      worker = await createWorker("kor+eng", 1, {
-        langPath: langDir,
-        cacheMethod: "none",
-        gzip: true,
-      });
-      return (await worker.recognize(buffer)).data.text;
-    } finally {
-      await worker?.terminate();
-      await rm(langDir, { recursive: true, force: true });
+export class ReceiptOcrError extends Error {
+  status: number;
+  constructor(message: string, status = 422) {
+    super(message);
+    this.name = "ReceiptOcrError";
+    this.status = status;
+  }
+}
+const unreadablePhoto = () =>
+  new ReceiptOcrError(
+    "전표 사진을 읽지 못했습니다. JPG·PNG·WEBP 사진으로 다시 촬영하거나 업로드해 주세요.",
+  );
+const recognitionTimeout = () =>
+  new ReceiptOcrError(
+    "전표 사진 인식 시간이 초과되었습니다. 사진 크기를 줄이거나 글자가 선명하게 나오도록 다시 촬영해 주세요.",
+    408,
+  );
+
+// Compressed file size does not bound decoded image memory (a 50MP JPEG can be 1MB).
+function receiptImageSize(buffer: Buffer): { width: number; height: number } {
+  if (
+    buffer.length >= 24 &&
+    buffer
+      .subarray(0, 8)
+      .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+    buffer.toString("ascii", 12, 16) === "IHDR"
+  )
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  if (buffer.length >= 4 && buffer[0] === 255 && buffer[1] === 216) {
+    let offset = 2;
+    while (offset + 3 < buffer.length) {
+      if (buffer[offset++] !== 255) break;
+      while (buffer[offset] === 255) offset++;
+      const marker = buffer[offset++];
+      if (marker === 217 || marker === 218) break;
+      if (marker === 1 || (marker >= 208 && marker <= 216)) continue;
+      if (offset + 2 > buffer.length) break;
+      const length = buffer.readUInt16BE(offset);
+      if (length < 2 || offset + length > buffer.length) break;
+      if (
+        marker >= 192 &&
+        marker <= 207 &&
+        ![196, 200, 204].includes(marker) &&
+        length >= 7
+      )
+        return {
+          width: buffer.readUInt16BE(offset + 5),
+          height: buffer.readUInt16BE(offset + 3),
+        };
+      offset += length;
     }
-  };
-  const result = ocrQueue.then(run, run);
-  ocrQueue = result.catch(() => {});
-  return result;
+  }
+  if (
+    buffer.length >= 20 &&
+    buffer.toString("ascii", 0, 4) === "RIFF" &&
+    buffer.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    for (let offset = 12; offset + 8 <= buffer.length; ) {
+      const chunk = buffer.toString("ascii", offset, offset + 4);
+      const length = buffer.readUInt32LE(offset + 4);
+      const data = offset + 8;
+      if (data + length > buffer.length) break;
+      if (chunk === "VP8X" && length >= 10)
+        return {
+          width: 1 + buffer.readUIntLE(data + 4, 3),
+          height: 1 + buffer.readUIntLE(data + 7, 3),
+        };
+      if (chunk === "VP8L" && length >= 5 && buffer[data] === 47) {
+        const bits = buffer.readUInt32LE(data + 1);
+        return {
+          width: 1 + (bits & 16383),
+          height: 1 + ((bits >>> 14) & 16383),
+        };
+      }
+      if (
+        chunk === "VP8 " &&
+        length >= 10 &&
+        buffer.readUIntBE(data + 3, 3) === 0x9d012a
+      )
+        return {
+          width: buffer.readUInt16LE(data + 6) & 16383,
+          height: buffer.readUInt16LE(data + 8) & 16383,
+        };
+      offset = data + length + (length % 2);
+    }
+  }
+  throw unreadablePhoto();
+}
+
+let ocrBusy = false;
+export async function recognizeReceipt(
+  buffer: Buffer,
+  options: { workerUrl?: URL; timeoutMs?: number } = {},
+): Promise<string> {
+  const { width, height } = receiptImageSize(buffer);
+  if (width <= 0 || height <= 0) throw unreadablePhoto();
+  if (width * height > 20_000_000)
+    throw new ReceiptOcrError(
+      "사진 해상도가 너무 큽니다. 일반 화질로 다시 촬영하거나 2,000만 화소 이하로 사진 크기를 줄여 주세요.",
+      413,
+    );
+  // One administrator upload at a time; never retain an unbounded queue of images.
+  if (ocrBusy)
+    throw new ReceiptOcrError(
+      "다른 전표 사진을 읽고 있습니다. 잠시 후 다시 업로드해 주세요.",
+      429,
+    );
+  ocrBusy = true;
+  let langDir: string | undefined;
+  try {
+    langDir = await mkdtemp(join(tmpdir(), "bareun-ocr-"));
+    return await new Promise<string>((resolve, reject) => {
+      // A process boundary also covers startup failures before createWorker()
+      // exposes its thread handle. A stuck decoder cannot take down the API.
+      const child = fork(
+        options.workerUrl ?? new URL("./receiptOcrWorker.ts", import.meta.url),
+        [],
+        {
+          execArgv: ["--use-env-proxy", "--experimental-strip-types"],
+          serialization: "advanced",
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+        },
+      );
+      let text: string | undefined;
+      let failure: ReceiptOcrError | undefined;
+      let sent = false;
+      let settled = false;
+      const finish = (error?: ReceiptOcrError) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(text!);
+      };
+      const stop = (error: ReceiptOcrError) => {
+        failure = error;
+        // Wait for close after killing so the next photo cannot overlap memory.
+        if (!child.kill("SIGKILL")) finish(error);
+      };
+      const timer = setTimeout(
+        () => stop(recognitionTimeout()),
+        options.timeoutMs ?? 45_000,
+      );
+      timer.unref();
+      child.once("error", () => stop(unreadablePhoto()));
+      child.on("message", (message: unknown) => {
+        const value = message as { type?: string; text?: unknown } | null;
+        if (value?.type === "ready" && !sent) {
+          sent = true;
+          child.send({ image: buffer, langDir }, (error) => {
+            if (error) stop(unreadablePhoto());
+          });
+        } else if (value?.type === "result" && typeof value.text === "string") {
+          text = value.text;
+        }
+      });
+      child.once("close", (code) => {
+        finish(
+          failure ??
+            (code === 0 && text !== undefined ? undefined : unreadablePhoto()),
+        );
+      });
+    });
+  } finally {
+    try {
+      if (langDir) await rm(langDir, { recursive: true, force: true });
+    } finally {
+      ocrBusy = false;
+    }
+  }
 }
 export function validateShipments(rows: unknown): ShipmentInput[] {
   if (!Array.isArray(rows) || !rows.length || rows.length > 2000)
