@@ -246,7 +246,12 @@ export function createDispatchApp(
       );
       if (row) route = store.route(row);
     }
-    res.json({ user: req.user, company: store.company(), route });
+    res.json({
+      user: req.user,
+      company: store.company(),
+      route,
+      mapSettings: { naverKeyId: store.mapSettings().naverKeyId },
+    });
   });
   app.get("/api/company", (req, res) => res.json(store.company()));
   app.get("/api/map-settings", admin, (_req, res) =>
@@ -265,7 +270,10 @@ export function createDispatchApp(
       "map",
       JSON.stringify({ naverKeyId }),
     );
-    notify("changed");
+    // The public browser key applies to every map. Send only a refresh signal.
+    for (const ws of connections.keys())
+      if (ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ event: "changed" }));
     res.json(store.mapSettings());
   });
   app.put("/api/company", admin, (req, res) => {

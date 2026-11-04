@@ -92,6 +92,7 @@ import {
 import type { DriverAutomation } from "./src/driverAutomation";
 import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
+import { createDriverMapData } from "./src/driverMapData";
 import KeyboardViewport from "./src/KeyboardViewport";
 import {
   TrafficPlannerControls,
@@ -147,6 +148,11 @@ type Position = {
   routeId: string;
 };
 type DriverState = Driver & { position: Position | null };
+type DriverRouteData = {
+  route: Route | null;
+  company: Company;
+  mapSettings?: MapSettings;
+};
 type Dashboard = {
   date: string;
   company: Company;
@@ -3319,10 +3325,7 @@ function DriverApp({
   busy: boolean;
   tell: (s: string) => void;
 }) {
-  const [data, setData] = useState<{
-      route: Route | null;
-      company: Company;
-    } | null>(null),
+  const [data, setData] = useState<DriverRouteData | null>(null),
     [mode, setMode] = useState<string>(trackingMode),
     [failed, setFailed] = useState<Shipment | null>(null),
     [overview, setOverview] = useState(false),
@@ -3330,7 +3333,7 @@ function DriverApp({
     [reason, setReason] = useState("");
   const refresh = useCallback(async () => {
     const [current, settings] = await Promise.all([
-      api<{ route: Route | null; company: Company }>("/api/me"),
+      api<DriverRouteData>("/api/me"),
       getDriverAutomation(),
     ]);
     setData(current);
@@ -3380,6 +3383,10 @@ function DriverApp({
     completed =
       route?.stops.filter((s) => s.status === "delivered").length ?? 0,
     active = !!route && ["active", "returning"].includes(route.status);
+  const requestMapSettings = () => {
+    setOverview(false);
+    tell("네이버 지도 연결 설정은 관리자에게 확인해 주세요.");
+  };
   const share = async () => {
     try {
       return await startTracking(tell);
@@ -3543,13 +3550,9 @@ function DriverApp({
             <CargoSummary stops={route.stops} />
             <Text style={[s.h3, { marginBottom: 10 }]}>전체 경로 미리보기</Text>
             <MapPanel
-              data={{
-                company,
-                routes: [route],
-                drivers: [],
-                nextStopId: next?.id,
-              }}
+              data={createDriverMapData(route, data.mapSettings)}
               height={280}
+              onConfigure={requestMapSettings}
             />
             <View style={{ marginTop: 10 }}>
               <Button
@@ -3854,8 +3857,10 @@ function DriverApp({
       {route && (
         <RouteOverview
           route={route}
+          mapSettings={data.mapSettings}
           visible={overview}
           onClose={() => setOverview(false)}
+          onConfigure={requestMapSettings}
         />
       )}
       <Sheet

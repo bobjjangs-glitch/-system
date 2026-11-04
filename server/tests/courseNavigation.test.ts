@@ -56,6 +56,71 @@ test("긴 코스는 공식 경유지 한도 안에서 구간으로 나누고 누
     original.stops.map((s) => s.id),
   );
 });
+test("배송지 15곳을 세 구간으로 이어 안내하고 중복·누락 없이 모두 완료한 뒤 회사로 복귀한다", () => {
+  const current = route(15);
+  const originalIds = current.stops.map((stop) => stop.id);
+  const completedIds: string[] = [];
+  const expectedSegments = [
+    [1, 2, 3, 4, 5, 6],
+    [7, 8, 9, 10, 11, 12],
+    [13, 14, 15],
+  ];
+  const plans: ReturnType<typeof buildCourseNavigation>[] = [];
+  while (current.stops.some((stop) => stop.status === "assigned")) {
+    const segmentIndex = plans.length;
+    const sequences = expectedSegments[segmentIndex];
+    assert.ok(
+      sequences,
+      "예상한 세 구간 이후 추가 안내가 필요하지 않아야 합니다.",
+    );
+    const plan = buildCourseNavigation(current);
+    const url = new URL(plan.url);
+    const final = segmentIndex === expectedSegments.length - 1;
+    assert.deepEqual(
+      plan.stops.map((stop) => stop.sequence),
+      sequences,
+    );
+    assert.equal(plan.returnsToCompany, final);
+    assert.equal(plan.remainingAfterSegment, [9, 3, 0][segmentIndex]);
+    assert.equal(plan.segmentEndStopId, final ? null : plan.stops.at(-1)!.id);
+    assert.equal(url.searchParams.has("v6lat"), false);
+    const viaStops = final ? plan.stops : plan.stops.slice(0, -1);
+    assert.equal(
+      [...url.searchParams.keys()].filter((key) => /^v\d+lat$/.test(key))
+        .length,
+      viaStops.length,
+    );
+    viaStops.forEach((stop, index) => {
+      assert.equal(
+        url.searchParams.get(`v${index + 1}lat`),
+        stop.lat!.toFixed(7),
+      );
+      assert.equal(
+        url.searchParams.get(`v${index + 1}name`),
+        `${stop.sequence}번 ${stop.recipient}`,
+      );
+    });
+    const destination = final ? current.company : plan.stops.at(-1)!;
+    assert.equal(url.searchParams.get("dlat"), destination.lat!.toFixed(7));
+    assert.equal(url.searchParams.get("dlng"), destination.lng!.toFixed(7));
+    assert.equal(
+      url.searchParams.get("dname"),
+      final ? current.company.name : plan.stops.at(-1)!.recipient,
+    );
+    for (const stop of plan.stops) {
+      assert.equal(stop.status, "assigned");
+      assert.equal(completedIds.includes(stop.id), false);
+      current.stops.find((candidate) => candidate.id === stop.id)!.status =
+        "delivered";
+      completedIds.push(stop.id);
+    }
+    plans.push(plan);
+  }
+  assert.equal(plans.length, 3);
+  assert.deepEqual(completedIds, originalIds);
+  assert.equal(new Set(completedIds).size, 15);
+  assert.ok(current.stops.every((stop) => stop.status === "delivered"));
+});
 test("완료·미배송 지점을 제외하며 남은 배송지가 없으면 회사만 안내한다", () => {
   const original = route(3);
   const result = buildCourseNavigation({

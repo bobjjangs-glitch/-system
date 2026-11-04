@@ -2,20 +2,24 @@ import React from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { X } from "lucide-react-native";
-import type { Route } from "../server/types";
+import type { MapSettings, Route } from "../server/types";
 import MapPanel from "./MapPanel";
+import { createDriverMapData } from "./driverMapData";
 import { Button, C, s } from "./ui";
 
 export default function RouteOverview({
   route,
+  mapSettings,
   visible,
   onClose,
+  onConfigure,
 }: {
   route: Route;
+  mapSettings?: MapSettings;
   visible: boolean;
   onClose: () => void;
+  onConfigure: () => void;
 }) {
-  const next = route.stops.find((stop) => stop.status === "assigned");
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}>
@@ -43,12 +47,8 @@ export default function RouteOverview({
           {visible && (
             <MapPanel
               fill
-              data={{
-                company: route.company,
-                routes: [route],
-                drivers: [],
-                nextStopId: next?.id,
-              }}
+              data={createDriverMapData(route, mapSettings)}
+              onConfigure={onConfigure}
             />
           )}
         </View>
@@ -76,7 +76,9 @@ export default function RouteOverview({
           <Text style={[s.muted, { fontSize: 11 }]}>
             {route.estimateSource === "approximate"
               ? "점선은 배송 순서이며 실제 도로 경로가 아니에요."
-              : "도로 기준 예상 경로이며 실시간 교통은 반영하지 않아요."}{" "}
+              : route.estimateSource === "naver-traffic"
+                ? "네이버 실시간 교통을 반영한 경로이며 배차 계산 시점 기준이에요."
+                : "도로 기준 예상 경로이며 실시간 교통은 반영하지 않아요."}{" "}
             완료한 배송지도 전체 경로에 표시해요.
           </Text>
           <Button title="배송 화면으로 돌아가기" secondary onPress={onClose} />
