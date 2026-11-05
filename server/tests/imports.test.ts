@@ -28,16 +28,24 @@ test("엑셀의 같은 수령인·주소에 여러 물품을 합치고 한글 �
   ]);
   assert.equal(validateShipments(rows)[0].lat, 36.33);
 });
-test("CSV도 읽고, 수량 오류나 잘못된 좌표는 거절한다", async () => {
+test("CSV는 주소만으로 읽고 오래된 잘못된 위치는 비우며 수량 오류는 거절한다", async () => {
   const rows = await parseSpreadsheet(
     Buffer.from("수령인,주소,품목,수량\n가게,대전 동구 중앙로 215,생수,2"),
     "배송.csv",
   );
   assert.equal(rows.length, 1);
-  assert.throws(
-    () => validateShipments([{ ...rows[0], lat: 123, lng: 127 }]),
-    /위도/,
-  );
+  for (const point of [
+    { lat: 123, lng: 127 },
+    { lat: null, lng: 127 },
+    { lat: NaN, lng: 127 },
+    { lat: 36, lng: 200 },
+    { lat: 0, lng: 0 },
+  ]) {
+    const [row] = validateShipments([{ ...rows[0], ...point }]);
+    assert.equal(row.address, rows[0].address);
+    assert.equal(row.lat, null);
+    assert.equal(row.lng, null);
+  }
   await assert.rejects(
     () =>
       parseSpreadsheet(

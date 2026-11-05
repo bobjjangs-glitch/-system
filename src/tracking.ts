@@ -1,4 +1,4 @@
-import { Platform, Linking, AppState } from "react-native";
+import { Platform, Linking, AppState, Alert } from "react-native";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import { requireOptionalNativeModule } from "expo";
@@ -6,6 +6,14 @@ import { api, getSession, restoreSession } from "./api";
 import type { Company, Point, Route } from "../server/types";
 import { buildCourseNavigation } from "./courseNavigation";
 import { waitForLocationService } from "./locationServiceState";
+import {
+  addressDirectionsUrl,
+  addressSearchFallback,
+  hasNavigationPoint,
+  navigationAddress,
+  navigationAddressLabel,
+} from "./addressNavigation";
+import type { NavigationDestination } from "./addressNavigation";
 import {
   clearDriverAutomation,
   configureDriverAutomation,
@@ -26,7 +34,9 @@ function androidService() {
     getForegroundServiceStatusAsync?: (name: string) => Promise<string>;
   }>("ExpoLocation");
   if (!module?.getForegroundServiceStatusAsync)
-    throw new Error("위치 공유 안정화 기능이 포함된 최신 APK로 업데이트해 주세요.");
+    throw new Error(
+      "위치 공유 안정화 기능이 포함된 최신 APK로 업데이트해 주세요.",
+    );
   return () => module.getForegroundServiceStatusAsync!(TASK);
 }
 export async function restoreTrackingMode() {
@@ -264,17 +274,95 @@ export async function resumeCourseNotification(routeId: string) {
     throw new Error("현재 운행 중인 코스를 확인해 주세요.");
   await navigateCourse(route);
 }
+async function offerAddressNavigation(address: string, company: Company) {
+  const directions = addressDirectionsUrl(address);
+  const search = addressSearchFallback(company.navigation, address);
+  const message =
+    "배송지 주소의 위치를 자동으로 확인하지 못했습니다. " +
+    "Google 지도에서 주소로 길안내를 시작하거나 지도에서 주소를 검색할 수 있어요.";
+  if (Platform.OS === "web") {
+    // React Native Web's Alert is a no-op. Keep this alternate provider opt-in.
+    if (
+      typeof window !== "undefined" &&
+      window.confirm(
+        message + "\n\nGoogle 지도에서 주소로 길안내를 시작할까요?",
+      )
+    )
+      await Linking.openURL(directions);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    let selected = false;
+    const open = (url: string) => {
+      selected = true;
+      Linking.openURL(url).then(
+        () => resolve(),
+        () => {
+          reject(
+            new Error(
+              "지도를 열지 못했습니다. 휴대폰의 지도 앱이나 인터넷 연결을 확인해 주세요.",
+            ),
+          );
+        },
+      );
+    };
+    Alert.alert(
+      "주소로 길안내",
+      message,
+      [
+        {
+          text: "취소",
+          style: "cancel",
+          onPress: () => {
+            selected = true;
+            resolve();
+          },
+        },
+        { text: search.title, onPress: () => open(search.url) },
+        { text: "Google 지도 길안내", onPress: () => open(directions) },
+      ],
+      {
+        cancelable: true,
+        onDismiss: () => {
+          if (!selected) resolve();
+        },
+      },
+    );
+  });
+}
+
 export async function navigate(
-  destination: Point & { recipient?: string; name?: string },
+  destination: NavigationDestination,
   company: Company,
 ) {
-  if (!Number.isFinite(destination.lat) || !Number.isFinite(destination.lng))
-    throw new Error("배송지의 위치 좌표를 확인해 주세요.");
+  let point: Point;
+  if (hasNavigationPoint(destination)) point = destination;
+  else {
+    const address = navigationAddress(destination.address);
+    if (!address) throw new Error("배송지 주소를 입력해 주세요.");
+    try {
+      const resolved = await api<Point>("/api/navigation/resolve", {
+        method: "POST",
+        body: JSON.stringify({
+          ...(destination.id ? { shipmentId: destination.id } : {}),
+          address,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!hasNavigationPoint({ ...resolved, address }))
+        throw new Error("배송지 주소의 위치를 확인하지 못했습니다.");
+      point = resolved;
+    } catch {
+      await offerAddressNavigation(address, company);
+      return;
+    }
+  }
   const label = encodeURIComponent(
       destination.recipient ?? destination.name ?? "배송지",
     ),
-    lat = destination.lat,
-    lng = destination.lng;
+    addressLabel = encodeURIComponent(navigationAddressLabel(destination)),
+    lat = point.lat,
+    lng = point.lng;
   let url =
     Platform.OS === "ios"
       ? `http://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`
@@ -296,7 +384,7 @@ export async function navigate(
         return;
       } catch {}
     }
-    url = `https://map.kakao.com/link/to/${label},${lat},${lng}`;
+    url = `https://map.kakao.com/link/to/${addressLabel},${lat},${lng}`;
   }
   if (company.navigation === "naver") {
     const native = `nmap://navigation?dlat=${lat}&dlng=${lng}&dname=${label}&appname=com.bobjjang.bareundispatch`;
@@ -309,7 +397,9 @@ export async function navigate(
           "네이버 지도 앱을 설치한 뒤 길안내를 다시 눌러 주세요.",
         );
       }
-    url = `https://map.naver.com/p/search/${label}`;
+    // Naver's supported browser fallback is address search, not turn-by-turn
+    // navigation. Recipient names can be ambiguous even after address resolution.
+    url = `https://map.naver.com/p/search/${addressLabel}`;
   }
   await Linking.openURL(url);
 }

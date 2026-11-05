@@ -92,6 +92,7 @@ import {
 import type { DriverAutomation } from "./src/driverAutomation";
 import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
+import { hasNavigationPoint } from "./src/addressNavigation";
 import { createDriverMapData } from "./src/driverMapData";
 import KeyboardViewport from "./src/KeyboardViewport";
 import {
@@ -632,7 +633,16 @@ function Admin({
     >(null),
     [pins, setPins] = useState<{ name: string; pin: string }[] | null>(null),
     [detail, setDetail] = useState<Shipment | null>(null),
+    [assignment, setAssignment] = useState<Shipment | null>(null),
     [confirmClear, setConfirmClear] = useState(false);
+  const [assignmentError, setAssignmentError] = useState("");
+  const [assignmentSaving, setAssignmentSaving] = useState(false);
+  const assignmentRef = useRef<Shipment | null>(null);
+  const assignmentSavingRef = useRef(false);
+  const [companyError, setCompanyError] = useState("");
+  const [addressLookupMessage, setAddressLookupMessage] = useState("");
+  const [detailError, setDetailError] = useState("");
+  useEffect(() => setDetailError(""), [detail?.id]);
   const [uploadProgress, setUploadProgress] = useState<{
     phase: string;
     startedAt: number;
@@ -771,14 +781,21 @@ function Admin({
       setPins(result.drivers);
       await refresh();
     });
-  const updateReview = (i: number, changes: Partial<ShipmentInput>) => {
+  const updateReview = (
+    i: number,
+    changes: Partial<ShipmentInput>,
+    expectedAddress?: string,
+  ) => {
     if (reviewSaving.current) return;
     setReview((old) =>
       old
         ? {
             ...old,
             drafts: old.drafts.map((r, index) =>
-              index === i ? { ...r, ...changes } : r,
+              index === i &&
+              (expectedAddress === undefined || r.address === expectedAddress)
+                ? { ...r, ...changes }
+                : r,
             ),
           }
         : null,
@@ -787,11 +804,75 @@ function Admin({
   const locateRow = (i: number) =>
     run(async () => {
       if (!review) return;
-      const point = await post("/api/geocode", {
-        address: review.drafts[i].address,
-      });
-      updateReview(i, point);
+      const address = review.drafts[i].address;
+      setReviewError("");
+      try {
+        const point = await post("/api/geocode", {
+          address,
+        });
+        updateReview(i, { lat: point.lat, lng: point.lng }, address);
+      } catch (error) {
+        setReviewError((error as Error).message);
+      }
     });
+  const openAssignment = (shipment: Shipment) => {
+    if (
+      busy ||
+      uploadRef.current ||
+      reviewSaving.current ||
+      receiptDeleteRef.current ||
+      assignmentSavingRef.current ||
+      shipment.status !== "pending" ||
+      shipment.routeId
+    )
+      return;
+    Keyboard.dismiss();
+    assignmentRef.current = shipment;
+    setAssignmentError("");
+    setDetail(null);
+    setAssignment(shipment);
+  };
+  const closeAssignment = () => {
+    if (assignmentSavingRef.current) return;
+    assignmentRef.current = null;
+    setAssignment(null);
+    setAssignmentError("");
+  };
+  const assignShipment = async (driverId: string) => {
+    const shipment = assignmentRef.current;
+    if (
+      !shipment ||
+      assignmentSavingRef.current ||
+      uploadRef.current ||
+      reviewSaving.current ||
+      receiptDeleteRef.current
+    )
+      return;
+    assignmentSavingRef.current = true;
+    reviewSaving.current = true;
+    setAssignmentSaving(true);
+    setAssignmentError("");
+    try {
+      const route = await post<Route>(
+        "/api/shipments/" + shipment.id + "/assign",
+        {
+          driverId,
+        },
+      );
+      assignmentRef.current = null;
+      if (mounted.current) {
+        setAssignment(null);
+        tell(`${route.driverName} 기사에게 배송지를 배정했습니다.`);
+        refresh().catch((error) => tell((error as Error).message));
+      }
+    } catch (error) {
+      if (mounted.current) setAssignmentError((error as Error).message);
+    } finally {
+      assignmentSavingRef.current = false;
+      reviewSaving.current = false;
+      if (mounted.current) setAssignmentSaving(false);
+    }
+  };
   const pickUpload = async (kind: "camera" | "photo" | "excel") => {
     // State-based button disabling is not a lock: refreshes and rapid taps can
     // otherwise admit another photo before the first operation has finished.
@@ -1214,6 +1295,7 @@ function Admin({
     reviewSaving.current = true;
     receiptDeleteRef.current = batch;
     setReceiptDeleteError("");
+    if (batch.shipment) setDetail(null);
     setReceiptDelete(batch);
   };
   const cancelReceiptDelete = () => {
@@ -1232,8 +1314,12 @@ function Admin({
     try {
       if (batch.shipment) {
         const shipment = batch.shipment;
-        if (shipment.status !== "pending" || shipment.routeId)
-          throw new Error("미배차 배송지만 삭제할 수 있습니다.");
+        const route = data?.routes.find((item) => item.id === shipment.routeId);
+        if (
+          !(shipment.status === "pending" && !shipment.routeId) &&
+          !(shipment.status === "assigned" && route?.status === "planned")
+        )
+          throw new Error("미배차 또는 출발 전 배송지만 삭제할 수 있습니다.");
         await api("/api/shipments/" + shipment.id, { method: "DELETE" });
         receiptDeleteRef.current = null;
         reviewSaving.current = false;
@@ -1242,7 +1328,11 @@ function Admin({
             current?.id === shipment.id ? null : current,
           );
           setReceiptDelete(null);
-          tell("미배차 배송지 1곳을 삭제했습니다.");
+          tell(
+            shipment.routeId
+              ? "배송지 1곳을 삭제하고 남은 코스를 다시 계산했습니다."
+              : "미배차 배송지 1곳을 삭제했습니다.",
+          );
           refresh().catch(() => {});
         }
         return;
@@ -1384,6 +1474,7 @@ function Admin({
             disabled={busy || !!uploadProgress}
             onPress={() => {
               setCompany({ ...data.company });
+              setCompanyError("");
               setConfirmClear(false);
             }}
             style={st.iconButton}
@@ -1453,7 +1544,7 @@ function Admin({
                 대전 지역 예시 데이터
               </Text>
               <Text style={[s.muted, { fontSize: 10 }]}>
-                공개 장소·예시 좌표입니다. 실제 배송 전 회사 설정에서 지워
+                공개 장소·예시 주소입니다. 실제 배송 전 회사 설정에서 지워
                 주세요.
               </Text>
             </View>
@@ -1934,6 +2025,60 @@ function Admin({
                   })
                 }
               />
+              <Text style={[s.muted, { marginTop: 12 }]}>
+                주소만 등록하면 배차할 때 위치를 자동 확인해요. 미배차 배송지를
+                눌러 기사에게 바로 배정할 수도 있어요.
+              </Text>
+              {data.shipments.some(
+                (shipment) =>
+                  shipment.status === "pending" &&
+                  !hasNavigationPoint(shipment),
+              ) && (
+                <View style={{ marginTop: 12 }}>
+                  <Button
+                    title="등록한 배송지 주소 확인"
+                    secondary
+                    icon={MapPin}
+                    disabled={busy || !!uploadProgress}
+                    onPress={() =>
+                      run(async () => {
+                        setAddressLookupMessage("");
+                        try {
+                          const result = await post<{
+                            resolved: number;
+                            unresolved: {
+                              id: string;
+                              address: string;
+                              message: string;
+                            }[];
+                            remaining: number;
+                          }>("/api/shipments/geocode", { serviceDate: date });
+                          setAddressLookupMessage(
+                            `${result.resolved}곳 주소 확인 완료` +
+                              (result.unresolved.length
+                                ? ` · ${result.unresolved.length}곳은 주소를 수정해 주세요.`
+                                : "") +
+                              (result.remaining
+                                ? ` · ${result.remaining}곳은 한 번 더 눌러 확인해 주세요.`
+                                : ""),
+                          );
+                          await refresh();
+                        } catch (error) {
+                          setAddressLookupMessage((error as Error).message);
+                        }
+                      })
+                    }
+                  />
+                </View>
+              )}
+              {addressLookupMessage ? (
+                <Text
+                  accessibilityRole="alert"
+                  style={[s.muted, { marginTop: 10 }]}
+                >
+                  {addressLookupMessage}
+                </Text>
+              ) : null}
               {data.stats.active > 0 && (
                 <Text style={[s.muted, { color: C.amber, marginTop: 10 }]}>
                   운행 중인 코스는 회사 복귀 후 재배차할 수 있어요.
@@ -1944,7 +2089,7 @@ function Admin({
             {!data.routes.length && (
               <Empty
                 title="아직 배차된 코스가 없어요"
-                description="전표를 등록하고 좌표 확인을 마친 뒤 추천 배차를 생성해 주세요."
+                description="배송지를 등록한 뒤 기사를 직접 배정하거나 추천 배차를 생성해 주세요."
                 action={
                   <Button
                     title="전표 등록하기"
@@ -1994,6 +2139,7 @@ function Admin({
                 </View>
                 <View style={[s.row, { marginTop: 12, marginBottom: 16 }]}>
                   <Badge text="회사 왕복 포함" />
+                  {route.manualAssigned && <Badge text="개별 배차" />}
                   <Badge
                     text={
                       route.estimateSource === "naver-traffic"
@@ -2011,6 +2157,12 @@ function Admin({
                     }
                   />
                 </View>
+                {route.manualAssigned && route.status === "planned" && (
+                  <Text style={[s.muted, { marginBottom: 12 }]}>
+                    추천 배차에서도 기사 배정을 유지해요. 배송지를 개별 배정하면
+                    이 코스에 추가됩니다.
+                  </Text>
+                )}
                 <RoutePlanningSummary route={route} />
                 <TimelineCompany name={route.company.name} label="출발" />
                 {route.stops.map((stop, index) => (
@@ -2121,16 +2273,7 @@ function Admin({
                 <Pressable
                   key={shipment.id}
                   disabled={!!uploadProgress}
-                  onPress={() =>
-                    !uploadRef.current &&
-                    setReview({
-                      fileName: "배송지 수정",
-                      id: undefined,
-                      drafts: [shipment],
-                      serviceDate: date,
-                      status: "edit",
-                    })
-                  }
+                  onPress={() => !uploadRef.current && setDetail(shipment)}
                 >
                   <Card>
                     <View style={s.between}>
@@ -2140,11 +2283,16 @@ function Admin({
                       </View>
                       <Badge
                         text={
-                          shipment.lat == null ? "주소 확인 필요" : "미배차"
+                          hasNavigationPoint(shipment)
+                            ? "미배차"
+                            : "주소 자동 확인 예정"
                         }
-                        tone={shipment.lat == null ? "amber" : "grey"}
+                        tone="grey"
                       />
                     </View>
+                    <Text style={[s.muted, { marginTop: 10 }]}>
+                      눌러서 기사 배정 · 수정 · 삭제 · 주소 길찾기
+                    </Text>
                   </Card>
                 </Pressable>
               ))}
@@ -2476,28 +2624,33 @@ function Admin({
               )}
             <View style={{ marginBottom: 16 }}>
               <Button
-                title="좌표 없는 주소 전체 확인"
+                title="주소 전체 확인"
                 secondary
                 icon={MapPin}
                 disabled={busy}
                 onPress={() =>
                   run(async () => {
+                    setReviewError("");
                     let failures = 0;
                     for (let i = 0; i < review.drafts.length; i++) {
                       const row = review.drafts[i];
-                      if (row.lat != null && row.lng != null) continue;
+                      if (hasNavigationPoint(row)) continue;
                       try {
                         const point = await post("/api/geocode", {
                           address: row.address,
                         });
-                        updateReview(i, point);
+                        updateReview(
+                          i,
+                          { lat: point.lat, lng: point.lng },
+                          row.address,
+                        );
                       } catch {
                         failures++;
                       }
                     }
                     if (failures)
-                      tell(
-                        `${failures}곳의 주소를 찾지 못했어요. 주소를 수정하거나 위도·경도를 직접 입력해 주세요.`,
+                      setReviewError(
+                        `${failures}곳의 주소를 찾지 못했어요. 도로명·건물번호를 확인해 주세요. 주소만으로 먼저 저장할 수도 있어요.`,
                       );
                   })
                 }
@@ -2607,33 +2760,14 @@ function Admin({
                   value={row.notes ?? ""}
                   onChangeText={(notes) => updateReview(index, { notes })}
                 />
-                <View style={s.row}>
-                  <View style={{ flex: 1 }}>
-                    <Field
-                      label="위도 (직접 입력 가능)"
-                      value={row.lat == null ? "" : String(row.lat)}
-                      onChangeText={(lat) =>
-                        updateReview(index, {
-                          lat: lat === "" ? null : Number(lat),
-                        })
-                      }
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Field
-                      label="경도"
-                      value={row.lng == null ? "" : String(row.lng)}
-                      onChangeText={(lng) =>
-                        updateReview(index, {
-                          lng: lng === "" ? null : Number(lng),
-                        })
-                      }
-                    />
-                  </View>
-                </View>
+                <Text style={[s.muted, { marginBottom: 12 }]}>
+                  {hasNavigationPoint(row)
+                    ? "주소 확인 완료"
+                    : "주소만 입력하면 배차할 때 위치를 자동 확인해요."}
+                </Text>
                 <Button
                   title={
-                    row.lat != null ? "주소 좌표 다시 확인" : "주소로 좌표 찾기"
+                    hasNavigationPoint(row) ? "주소 다시 확인" : "주소 확인"
                   }
                   secondary
                   icon={MapPin}
@@ -2665,8 +2799,8 @@ function Admin({
               </Card>
             )}
             <Text style={[s.muted, { marginBottom: 15 }]}>
-              좌표가 없는 배송지도 저장할 수 있어요. 추천 배차 전에는 모든
-              주소의 좌표 확인이 필요합니다.
+              주소만 입력해 저장하면 돼요. 기사 배정·추천 배차 때 위치를 자동
+              확인합니다.
             </Text>
             <Button
               title={`${review.drafts.length}곳 확인하고 ${review.status === "edit" ? "저장" : "배송지 등록"}`}
@@ -2796,7 +2930,9 @@ function Admin({
       <Sheet
         title="회사 · 배송 설정"
         visible={!!company}
-        onClose={() => setCompany(null)}
+        onClose={() => {
+          if (!busy) setCompany(null);
+        }}
       >
         {company && (
           <>
@@ -2808,55 +2944,40 @@ function Admin({
             <Field
               label="회사 출발·복귀 주소"
               value={company.address}
-              onChangeText={(address) =>
-                setCompany({ ...company, address, lat: NaN, lng: NaN })
-              }
+              onChangeText={(address) => {
+                setCompany({ ...company, address, lat: NaN, lng: NaN });
+                setCompanyError("");
+              }}
               multiline
             />
             <Button
-              title="회사 주소로 좌표 확인"
+              title="회사 주소 확인"
               secondary
               icon={MapPin}
               disabled={busy}
               onPress={() =>
                 run(async () => {
-                  const point = await post("/api/geocode", {
-                    address: company.address,
-                  });
-                  setCompany({ ...company, ...point });
+                  setCompanyError("");
+                  try {
+                    const point = await post("/api/geocode", {
+                      address: company.address,
+                    });
+                    setCompany((current) =>
+                      current?.address === company.address
+                        ? { ...current, lat: point.lat, lng: point.lng }
+                        : current,
+                    );
+                  } catch (error) {
+                    setCompanyError((error as Error).message);
+                  }
                 })
               }
             />
-            <View style={[s.row, { marginTop: 15 }]}>
-              <View style={{ flex: 1 }}>
-                <Field
-                  label="출발지 위도"
-                  value={
-                    Number.isFinite(company.lat) ? String(company.lat) : ""
-                  }
-                  onChangeText={(lat) =>
-                    setCompany({
-                      ...company,
-                      lat: lat === "" ? NaN : Number(lat),
-                    })
-                  }
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Field
-                  label="출발지 경도"
-                  value={
-                    Number.isFinite(company.lng) ? String(company.lng) : ""
-                  }
-                  onChangeText={(lng) =>
-                    setCompany({
-                      ...company,
-                      lng: lng === "" ? NaN : Number(lng),
-                    })
-                  }
-                />
-              </View>
-            </View>
+            <Text style={[s.muted, { marginTop: 10, marginBottom: 20 }]}>
+              {hasNavigationPoint(company)
+                ? "회사 주소 확인 완료"
+                : "주소만 입력하면 저장할 때 회사 출발·복귀 위치를 자동 확인해요."}
+            </Text>
             <Field
               label="배송지당 예상 체류 시간 (분)"
               numeric
@@ -2885,21 +3006,34 @@ function Admin({
             <Text style={[s.muted, { marginBottom: 20 }]}>
               모든 코스는 이 회사에서 출발하고 복귀합니다. 출발 전 배차는 설정
               변경 후 다시 생성해 주세요. 운행 중에는 출발지를 변경할 수 없어요.
-              예상 시간은 배송지 체류와 회사 복귀를 포함하며 실시간 교통은
-              반영하지 않습니다.
+              예상 시간은 배송지 체류와 회사 복귀를 포함합니다. 배차할 때 실시간
+              교통 반영 여부를 선택할 수 있어요.
             </Text>
+            {companyError ? (
+              <Text
+                accessibilityRole="alert"
+                style={{ color: C.red, marginBottom: 16 }}
+              >
+                {companyError}
+              </Text>
+            ) : null}
             <Button
               title="회사 설정 저장"
               icon={Check}
               disabled={busy}
               onPress={() =>
                 run(async () => {
-                  await api("/api/company", {
-                    method: "PUT",
-                    body: JSON.stringify(company),
-                  });
-                  setCompany(null);
-                  await refresh();
+                  setCompanyError("");
+                  try {
+                    await api("/api/company", {
+                      method: "PUT",
+                      body: JSON.stringify(company),
+                    });
+                    setCompany(null);
+                    await refresh();
+                  } catch (error) {
+                    setCompanyError((error as Error).message);
+                  }
                 })
               }
             />
@@ -3044,6 +3178,90 @@ function Admin({
         <Button title="확인했어요" onPress={() => setPins(null)} />
       </Sheet>
       <Sheet
+        title="기사에게 개별 배정"
+        visible={!!assignment}
+        onClose={closeAssignment}
+      >
+        {assignment && (
+          <>
+            <Text style={[s.h2, { marginBottom: 10 }]}>
+              {assignment.recipient}
+            </Text>
+            <Text style={[s.muted, { marginBottom: 16 }]}>
+              {assignment.address}
+            </Text>
+            <Text style={[s.muted, { marginBottom: 18 }]}>
+              추천 배차 없이 기사에게 바로 배정해요. 선택한 기사 코스에 추가하고
+              배송 순서·회사 복귀 시간을 다시 계산합니다.
+            </Text>
+            {data.drivers
+              .filter((driver) => driver.active)
+              .map((driver) => {
+                const planned = data.routes.find(
+                  (route) =>
+                    route.driverId === driver.id && route.status === "planned",
+                );
+                const driving = data.routes.some(
+                  (route) =>
+                    route.driverId === driver.id &&
+                    ["active", "returning"].includes(route.status),
+                );
+                const count = planned?.stops.length ?? 0;
+                const full = count >= driver.capacity;
+                return (
+                  <Card key={driver.id}>
+                    <Text style={s.h3}>{driver.name}</Text>
+                    <Text style={[s.muted, { marginTop: 8, marginBottom: 14 }]}>
+                      {driving
+                        ? "배송·복귀 중에는 추가 배정할 수 없어요."
+                        : full
+                          ? `현재 ${count}곳 · 최대 ${driver.capacity}곳으로 가득 찼어요.`
+                          : planned
+                            ? `출발 전 코스 ${count}곳 → ${count + 1}곳 · 최대 ${driver.capacity}곳`
+                            : `새 코스로 배정 · 최대 ${driver.capacity}곳`}
+                    </Text>
+                    <Button
+                      title={
+                        assignmentSaving
+                          ? "배정 중…"
+                          : `${driver.name} 기사에게 배정`
+                      }
+                      icon={Truck}
+                      disabled={
+                        busy ||
+                        assignmentSaving ||
+                        driving ||
+                        full ||
+                        !!uploadProgress
+                      }
+                      onPress={() => run(() => assignShipment(driver.id))}
+                    />
+                  </Card>
+                );
+              })}
+            {!data.drivers.some((driver) => driver.active) && (
+              <Text style={[s.muted, { marginBottom: 20 }]}>
+                등록된 활동 기사가 없어요. 기사 메뉴에서 기사를 추가해 주세요.
+              </Text>
+            )}
+            {assignmentError ? (
+              <Text
+                accessibilityRole="alert"
+                style={{ color: C.red, marginBottom: 16 }}
+              >
+                {assignmentError}
+              </Text>
+            ) : null}
+            <Button
+              title="닫기"
+              secondary
+              disabled={assignmentSaving}
+              onPress={closeAssignment}
+            />
+          </>
+        )}
+      </Sheet>
+      <Sheet
         title="배송 상세"
         visible={!!detail}
         onClose={() => setDetail(null)}
@@ -3081,7 +3299,74 @@ function Admin({
                 미배송 사유: {detail.failureReason}
               </Text>
             )}
+            <View style={{ marginTop: 20 }}>
+              <Button
+                title="주소로 길찾기"
+                secondary
+                icon={Navigation}
+                disabled={busy || !detail.address.trim()}
+                onPress={() =>
+                  run(async () => {
+                    setDetailError("");
+                    try {
+                      await navigate(detail, data.company);
+                    } catch (error) {
+                      setDetailError((error as Error).message);
+                    }
+                  })
+                }
+              />
+            </View>
+            {detailError ? (
+              <Text
+                accessibilityRole="alert"
+                style={{ color: C.red, marginTop: 12 }}
+              >
+                {detailError}
+              </Text>
+            ) : null}
             {detail.status === "pending" && !detail.routeId && (
+              <>
+                <View style={{ marginTop: 10 }}>
+                  <Button
+                    title="기사 배정"
+                    icon={Truck}
+                    disabled={busy || !!uploadProgress || !!receiptDelete}
+                    onPress={() => openAssignment(detail)}
+                  />
+                </View>
+                <View style={{ marginTop: 10 }}>
+                  <Button
+                    title="배송지 수정"
+                    secondary
+                    icon={ClipboardList}
+                    disabled={busy || !!uploadProgress || !!receiptDelete}
+                    onPress={() => {
+                      if (
+                        uploadRef.current ||
+                        reviewSaving.current ||
+                        receiptDeleteRef.current
+                      )
+                        return;
+                      const batch: ImportBatch = {
+                        fileName: "배송지 수정",
+                        drafts: [detail],
+                        serviceDate: detail.serviceDate,
+                        status: "edit",
+                      };
+                      reviewRef.current = batch;
+                      setReviewError("");
+                      setDetail(null);
+                      setReview(batch);
+                    }}
+                  />
+                </View>
+              </>
+            )}
+            {((detail.status === "pending" && !detail.routeId) ||
+              (detail.status === "assigned" &&
+                data.routes.find((route) => route.id === detail.routeId)
+                  ?.status === "planned")) && (
               <View style={{ marginTop: 20 }}>
                 <Button
                   title="이 배송지 삭제"
@@ -3149,7 +3434,9 @@ function Admin({
             </Text>
             <Text style={[s.muted, { marginBottom: 14 }]}>
               {receiptDelete.shipment
-                ? "미배차 배송지 1곳을 삭제합니다. 업로드한 전표 원본과 다른 배송지는 보관됩니다."
+                ? receiptDelete.shipment.routeId
+                  ? "출발 전 코스에서 배송지 1곳을 삭제하고 남은 경로와 예상 시간을 다시 계산합니다. 업로드한 전표 원본과 다른 배송지는 보관됩니다."
+                  : "미배차 배송지 1곳을 삭제합니다. 업로드한 전표 원본과 다른 배송지는 보관됩니다."
                 : receiptDelete.status === "committed"
                   ? `전표 1건과 연결된 미배차 배송지 최대 ${receiptDelete.count ?? receiptDelete.drafts.length}곳을 함께 삭제합니다.`
                   : receiptDelete.id
@@ -3158,7 +3445,9 @@ function Admin({
             </Text>
             {(receiptDelete.id || receiptDelete.shipment) && (
               <Text style={[s.muted, { marginBottom: 14 }]}>
-                배차·운행·배송 처리한 내역은 삭제할 수 없습니다.
+                {receiptDelete.shipment
+                  ? "운행 중이거나 배송 처리한 배송지는 삭제할 수 없습니다."
+                  : "배차·운행·배송 처리한 내역은 삭제할 수 없습니다."}
               </Text>
             )}
             <Text style={{ color: C.red, marginBottom: 18 }}>

@@ -67,6 +67,7 @@ export type Route = {
   startedAt: string | null;
   completedAt: string | null;
   planning?: RoutePlanning | null;
+  manualAssigned?: boolean;
   stops: Shipment[];
 };
 export function isPoint(value: {

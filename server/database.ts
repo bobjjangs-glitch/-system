@@ -326,6 +326,7 @@ export class Store {
     return {
       ...row,
       driverName: driver?.name ?? "기사",
+      manualAssigned: !!this.one("SELECT key FROM settings WHERE key=?", "manual-route:" + row.id),
       company: JSON.parse(row.company),
       geometry: JSON.parse(row.geometry),
       planning: row.planning ? JSON.parse(row.planning) : null,

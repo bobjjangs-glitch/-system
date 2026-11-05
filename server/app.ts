@@ -22,7 +22,8 @@ import {
   validateShipments,
   validateReceiptImage,
 } from "./imports.ts";
-import { geocode } from "./geocoding.ts";
+import { geocode, GeocodingError } from "./geocoding.ts";
+import { assignPendingShipment, removePlannedShipment, PlannedShipmentMutationError } from "./manualAssignment.ts";
 import { seedDemo } from "./demo.ts";
 import { createMapDocument } from "../src/mapDocument.ts";
 import { extractReceipt } from "../src/receiptText.ts";
@@ -61,7 +62,7 @@ function pinValue(value: unknown): string {
 }
 
 export function createDispatchApp(
-  options: { dataDir?: string; roadRouting?: boolean; test?: boolean } = {},
+  options: { dataDir?: string; roadRouting?: boolean; test?: boolean; autoGeocode?: boolean } = {},
 ) {
   const dataDir = resolve(
     options.dataDir ?? process.env.APP_DATA_DIR ?? ".local",
@@ -74,6 +75,9 @@ export function createDispatchApp(
   const connections = new Map<WebSocket, Session>();
   const socketTokens = new Map<WebSocket, string>();
   let routingBusy = false;
+  let closing = false;
+  const hasLocation = (row: { lat?: unknown; lng?: unknown }) =>
+    isPoint(row) && !(row.lat === 0 && row.lng === 0);
   const notify = (event: string, payload: any = {}, driverId?: string) => {
     for (const [ws, user] of connections)
       if (
@@ -81,6 +85,40 @@ export function createDispatchApp(
         (user.role === "admin" || user.userId === driverId)
       )
         ws.send(JSON.stringify({ event, ...payload }));
+  };
+  const locateSavedAddresses = async (date: string, ids?: string[], allowRouting = false, maximum = 25) => {
+    const candidates = store.shipments(date).filter((row) => row.status === "pending" && !row.routeId && !hasLocation(row) && (!ids || ids.includes(row.id)));
+    const unresolved: { id: string; address: string; message: string }[] = [];
+    const deadline = Date.now() + 25000;
+    let resolved = 0;
+    for (const row of candidates.slice(0, maximum)) {
+      if (closing || Date.now() >= deadline || (routingBusy && !allowRouting)) break;
+      try {
+        const point = await geocode(store, row.address);
+        if (closing || (routingBusy && !allowRouting)) break;
+        const current = store.one("SELECT * FROM shipments WHERE id=?", row.id);
+        if (current?.address !== row.address || current.status !== "pending" || current.routeId || hasLocation(current)) continue;
+        store.run("UPDATE shipments SET lat=?,lng=? WHERE id=? AND address=? AND status='pending' AND routeId IS NULL", point.lat, point.lng, row.id, row.address);
+        resolved++;
+      } catch (error) {
+        unresolved.push({ id: row.id, address: row.address, message: error instanceof GeocodingError ? error.message : "배송주소를 확인하지 못했습니다. 주소를 확인한 뒤 다시 시도해 주세요." });
+        if (error instanceof GeocodingError && error.code !== "NOT_FOUND") break;
+      }
+    }
+    const remaining = closing ? 0 : store.shipments(date).filter((row) => row.status === "pending" && !row.routeId && !hasLocation(row) && (!ids || ids.includes(row.id))).length;
+    if (resolved && !closing) notify("changed");
+    return { resolved, unresolved, remaining };
+  };
+  const addressJobs = new Set<Promise<unknown>>();
+  const queuedAddressDates = new Set<string>();
+  const scheduleAddressLookup = (date: string) => {
+    if (closing || queuedAddressDates.has(date) || !(options.autoGeocode ?? (!options.test && options.roadRouting !== false))) return;
+    queuedAddressDates.add(date);
+    const job = Promise.resolve().then(() => locateSavedAddresses(date)).catch(() => {}).finally(() => {
+      queuedAddressDates.delete(date);
+      addressJobs.delete(job);
+    });
+    addressJobs.add(job);
   };
   const liveTimer = setInterval(() => {
     for (const [ws, user] of connections) {
@@ -276,53 +314,27 @@ export function createDispatchApp(
         ws.send(JSON.stringify({ event: "changed" }));
     res.json(store.mapSettings());
   });
-  app.put("/api/company", admin, (req, res) => {
-    assert(
-      !store.one(
-        "SELECT id FROM routes WHERE status IN ('active','returning') LIMIT 1",
-      ),
-      "운행 중에는 출발지를 변경할 수 없습니다. 회사 복귀 후 변경해 주세요.",
-      409,
-    );
+  app.put("/api/company", admin, async (req, res) => {
+    assert(!routingBusy, "배차 작업이 끝난 뒤 회사 설정을 변경해 주세요.", 409);
     const c = req.body as Company;
-    assert(
-      typeof c.name === "string" &&
-        c.name.trim() &&
-        typeof c.address === "string" &&
-        c.address.trim() &&
-        isPoint(c),
-      "회사명·주소·좌표를 확인해 주세요.",
-    );
-    assert(
-      Number.isFinite(c.serviceMinutes) &&
-        c.serviceMinutes >= 0 &&
-        c.serviceMinutes <= 120,
-      "배송지 체류 시간은 0~120분으로 입력해 주세요.",
-    );
-    assert(
-      ["kakao", "naver", "default"].includes(c.navigation),
-      "길안내 설정을 확인해 주세요.",
-    );
-    store.transaction(() => {
-      store.run(
-        "UPDATE settings SET value=? WHERE key=?",
-        JSON.stringify({
-          name: c.name.slice(0, 100),
-          address: c.address.slice(0, 500),
-          lat: c.lat,
-          lng: c.lng,
-          serviceMinutes: c.serviceMinutes,
-          navigation: c.navigation,
-        }),
-        "company",
-      );
-      store.run(
-        "UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE routeId IN (SELECT id FROM routes WHERE status='planned')",
-      );
-      store.run("DELETE FROM routes WHERE status='planned'");
-    });
-    notify("changed");
-    res.json(store.company());
+    assert(typeof c.name === "string" && c.name.trim() && typeof c.address === "string" && c.address.trim() && c.address.length <= 500, "회사명과 출발·복귀 주소를 입력해 주세요.");
+    assert(Number.isFinite(c.serviceMinutes) && c.serviceMinutes >= 0 && c.serviceMinutes <= 120, "배송지 체류 시간은 0~120분으로 입력해 주세요.");
+    assert(["kakao", "naver", "default"].includes(c.navigation), "길안내 설정을 확인해 주세요.");
+    assert(!store.one("SELECT id FROM routes WHERE status IN ('active','returning') LIMIT 1"), "운행 중에는 출발지를 변경할 수 없습니다. 회사 복귀 후 변경해 주세요.", 409);
+    routingBusy = true;
+    try {
+      const before = store.company();
+      const point = hasLocation(c) ? { lat: c.lat, lng: c.lng } : c.address.trim() === before.address && hasLocation(before) ? { lat: before.lat, lng: before.lng } : await geocode(store, c.address.trim());
+      store.transaction(() => {
+        assert(JSON.stringify(store.company()) === JSON.stringify(before) && !store.one("SELECT id FROM routes WHERE status IN ('active','returning') LIMIT 1"), "회사나 운행 정보가 변경되었습니다. 다시 확인해 주세요.", 409);
+        store.run("UPDATE settings SET value=? WHERE key=?", JSON.stringify({ name: c.name.trim().slice(0,100), address: c.address.trim(), ...point, serviceMinutes: c.serviceMinutes, navigation: c.navigation }), "company");
+        for (const route of store.all("SELECT id FROM routes WHERE status='planned'")) store.run("DELETE FROM settings WHERE key=?", "manual-route:" + route.id);
+        store.run("UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE routeId IN (SELECT id FROM routes WHERE status='planned')");
+        store.run("DELETE FROM routes WHERE status='planned'");
+      });
+      notify("changed");
+      res.json(store.company());
+    } finally { routingBusy = false; }
   });
   app.get("/api/drivers", admin, (_req, res) => res.json(store.drivers()));
   app.get("/api/drivers/:id/pin", admin, (req, res) => {
@@ -367,6 +379,7 @@ export function createDispatchApp(
       .json({ ...created, pin });
   });
   app.patch("/api/drivers/:id", admin, (req, res) => {
+    assert(!routingBusy, "배차 작업이 끝난 뒤 기사 정보를 수정해 주세요.", 409);
     const existing = store.one(
       "SELECT * FROM users WHERE id=? AND role=?",
       req.params.id,
@@ -504,14 +517,34 @@ export function createDispatchApp(
   });
   app.post("/api/geocode", admin, async (req, res) => {
     assert(
-      typeof req.body.address === "string" && req.body.address.trim(),
+      typeof req.body.address === "string" && req.body.address.trim() && req.body.address.length <= 500,
       "주소를 입력해 주세요.",
     );
-    try {
-      res.json(await geocode(store, req.body.address.trim()));
-    } catch (error) {
-      throw new AppError((error as Error).message, 503);
+    res.json(await geocode(store, req.body.address.trim()));
+  });
+  app.post("/api/navigation/resolve", async (request, res) => {
+    const req = request as AuthRequest;
+    let address: string;
+    let row: any;
+    if (req.body.shipmentId !== undefined) {
+      assert(typeof req.body.shipmentId === "string", "배송지를 확인해 주세요.");
+      row = store.one("SELECT * FROM shipments WHERE id=?", req.body.shipmentId);
+      assert(row, "배송지를 찾을 수 없습니다.", 404);
+      if (req.user.role !== "admin") {
+        assert(store.one("SELECT id FROM routes WHERE id=? AND driverId=?", row.routeId, req.user.userId), "배정된 배송지만 길찾기할 수 있습니다.", 403);
+      }
+      address = row.address;
+    } else {
+      assert(req.user.role === "admin", "배정된 배송지를 선택해 주세요.", 403);
+      address = req.body.address;
     }
+    assert(typeof address === "string" && address.trim() && address.length <= 500, "배송주소를 입력해 주세요.");
+    if (row && hasLocation(row)) return res.json({ lat: row.lat, lng: row.lng });
+    const point = await geocode(store, address.trim());
+    if (row && !routingBusy) {
+      store.run("UPDATE shipments SET lat=?,lng=? WHERE id=? AND address=? AND status='pending' AND routeId IS NULL", point.lat, point.lng, row.id, address);
+    }
+    res.json(point);
   });
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -717,7 +750,10 @@ export function createDispatchApp(
       );
       committed = true;
     });
-    if (committed) notify("changed");
+    if (committed) {
+      notify("changed");
+      scheduleAddressLookup(batch.serviceDate);
+    }
     res.status(201).json({ count });
   });
   app.delete("/api/imports/:id", admin, (req, res) => {
@@ -803,8 +839,6 @@ export function createDispatchApp(
       ["품목", 24],
       ["수량", 10],
       ["비고", 30],
-      ["위도", 18],
-      ["경도", 18],
     ].map(([header, width]) => ({
       header: String(header),
       width: Number(width),
@@ -816,8 +850,6 @@ export function createDispatchApp(
       "생수",
       2,
       "예시 행을 지우고 실제 배송지를 입력하세요.",
-      36.3326,
-      127.4347,
     ]);
     sheet.getRow(1).font = { bold: true };
     res.setHeader(
@@ -841,9 +873,36 @@ export function createDispatchApp(
       for (const row of rows) insertShipment(row, date);
     });
     notify("changed");
+    scheduleAddressLookup(date);
     res.status(201).json({ count: rows.length });
   });
+  app.post("/api/shipments/geocode", admin, async (req, res) => {
+    assert(!routingBusy, "배차 작업이 끝난 뒤 주소를 다시 확인해 주세요.", 409);
+    const date = dateValue(req.body.serviceDate);
+    const ids = req.body.shipmentIds;
+    assert(ids === undefined || (Array.isArray(ids) && ids.length > 0 && ids.length <= 2000 && ids.every((v: unknown) => typeof v === "string" && v.length <= 128)), "확인할 배송지를 선택해 주세요.");
+    res.json(await locateSavedAddresses(date, ids));
+  });
+  app.post("/api/shipments/:id/assign", admin, async (req, res) => {
+    assert(!routingBusy, "다른 배차 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.", 409);
+    assert(typeof req.body.driverId === "string" && req.body.driverId.trim(), "배정할 기사를 선택해 주세요.");
+    routingBusy = true;
+    try {
+      // A successful assignment response may be lost on a mobile connection.
+      // Repeating the same choice returns the existing manual course.
+      const assigned = store.one("SELECT * FROM shipments WHERE id=?", req.params.id);
+      if (assigned?.status === "assigned" && assigned.routeId) {
+        const existing = store.one("SELECT * FROM routes WHERE id=? AND driverId=? AND status='planned'", assigned.routeId, req.body.driverId);
+        if (existing && store.one("SELECT key FROM settings WHERE key=?", "manual-route:" + existing.id))
+          return res.json(store.route(existing));
+      }
+      const route = await assignPendingShipment(store, { shipmentId: String(req.params.id), driverId: req.body.driverId }, { roadRouting: options.roadRouting });
+      notify("changed", {}, route.driverId);
+      res.json(route);
+    } finally { routingBusy = false; }
+  });
   app.patch("/api/shipments/:id", admin, (req, res) => {
+    assert(!routingBusy, "배차 작업이 끝난 뒤 배송주소를 수정해 주세요.", 409);
     const old = store.one("SELECT * FROM shipments WHERE id=?", req.params.id);
     assert(old, "배송지를 찾을 수 없습니다.", 404);
     assert(
@@ -851,7 +910,9 @@ export function createDispatchApp(
       "이미 배차된 배송지는 새 배차를 만들기 전에 변경해 주세요.",
       409,
     );
-    const row = validateShipments([{ ...store.shipment(old), ...req.body }])[0];
+    const values = { ...store.shipment(old), ...req.body };
+    if (values.address !== old.address && !isPoint(req.body)) { values.lat = null; values.lng = null; }
+    const row = validateShipments([values])[0];
     store.run(
       "UPDATE shipments SET recipient=?,address=?,phone=?,items=?,notes=?,lat=?,lng=? WHERE id=?",
       row.recipient,
@@ -864,23 +925,17 @@ export function createDispatchApp(
       old.id,
     );
     notify("changed");
+    scheduleAddressLookup(old.serviceDate);
     res.json({ ok: true });
   });
-  app.delete("/api/shipments/:id", admin, (req, res) => {
-    const row = store.one(
-      "SELECT status,routeId FROM shipments WHERE id=?",
-      req.params.id,
-    );
-    assert(row, "배송지를 찾을 수 없습니다.", 404);
+  app.delete("/api/shipments/:id", admin, async (req, res) => {
     assert(!routingBusy, "배차를 계산 중입니다. 잠시 후 다시 삭제해 주세요.", 409);
-    assert(
-      row.status === "pending" && row.routeId === null,
-      "미배차 배송지만 삭제할 수 있습니다.",
-      409,
-    );
-    store.run("DELETE FROM shipments WHERE id=?", req.params.id);
-    notify("changed");
-    res.json({ ok: true });
+    routingBusy = true;
+    try {
+      const removed = await removePlannedShipment(store, { shipmentId: String(req.params.id) }, { roadRouting: options.roadRouting });
+      notify("changed", {}, removed.driverId ?? undefined);
+      res.json({ ok: true });
+    } finally { routingBusy = false; }
   });
   app.get("/api/dashboard", admin, (req, res) => {
     const date = dateValue(req.query.date),
@@ -933,16 +988,27 @@ export function createDispatchApp(
         "운행 중인 코스가 있어 재배차할 수 없습니다.",
         409,
       );
-      const shipments = store
+      const manualRoutes = store.routes(date).filter((route) => route.status === "planned" && route.manualAssigned);
+      const manualRouteIds = new Set(manualRoutes.map((route) => route.id));
+      const manualDriverIds = new Set(manualRoutes.map((route) => route.driverId));
+      const automaticRoutes = store.routes(date).filter((route) => route.status === "planned" && !manualRouteIds.has(route.id));
+      let shipments = store
         .shipments(date)
-        .filter((s) => ["pending", "assigned"].includes(s.status));
+        .filter((s) => ["pending", "assigned"].includes(s.status) && !manualRouteIds.has(s.routeId ?? ""));
+      if (!shipments.length && manualRoutes.length) return res.json(store.routes(date));
       assert(shipments.length, "배차할 배송지가 없습니다.");
+      if (shipments.some((row) => !hasLocation(row))) {
+        const checked = await locateSavedAddresses(date, shipments.map((row) => row.id), true, 200);
+        shipments = store.shipments(date).filter((row) => ["pending", "assigned"].includes(row.status) && !manualRouteIds.has(row.routeId ?? ""));
+        const missing = shipments.filter((row) => !hasLocation(row));
+        assert(!missing.length, `${missing.length}곳의 배송주소를 확인하지 못했습니다. ${checked.unresolved[0]?.message ?? "주소 자동 확인을 다시 실행해 주세요."}`, 422);
+      }
       const company = store.company();
       let drivers = store
         .drivers()
         .filter(
           (d) =>
-            d.active &&
+            d.active && !manualDriverIds.has(d.id) &&
             !store.one(
               "SELECT id FROM routes WHERE driverId=? AND status IN ('active','returning')",
               d.id,
@@ -950,6 +1016,9 @@ export function createDispatchApp(
         );
       if (Array.isArray(req.body.driverIds))
         drivers = drivers.filter((d) => req.body.driverIds.includes(d.id));
+      assert(drivers.length, "개별 배차 코스를 유지하고 있습니다. 다른 기사를 선택하거나 미배차 배송지를 기사에게 직접 배정해 주세요.", 422);
+      const snapshot = () => JSON.stringify({ shipments: store.shipments(date), routes: store.routes(date), drivers: store.drivers(), company: store.company() });
+      const original = snapshot();
       const estimated = await planDispatch(company, shipments, drivers, {
         roadRouting: options.roadRouting !== false,
         trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : undefined,
@@ -957,6 +1026,7 @@ export function createDispatchApp(
         serviceDate: date,
       });
       store.transaction(() => {
+        assert(snapshot() === original, "배송지나 기사 정보가 변경되어 배차를 중단했습니다. 다시 실행해 주세요.", 409);
         assert(
           !store.one(
             "SELECT id FROM routes WHERE serviceDate=? AND status IN ('active','returning')",
@@ -965,14 +1035,10 @@ export function createDispatchApp(
           "운행이 시작되어 배차를 중단했습니다.",
           409,
         );
-        store.run(
-          "UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE serviceDate=? AND status='assigned'",
-          date,
-        );
-        store.run(
-          "DELETE FROM routes WHERE serviceDate=? AND status='planned'",
-          date,
-        );
+        for (const old of automaticRoutes) {
+          store.run("UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE routeId=? AND status='assigned'", old.id);
+          store.run("DELETE FROM routes WHERE id=? AND status='planned'", old.id);
+        }
         for (const { driver, stops, estimate, planning } of estimated) {
           const routeId = id();
           store.run(
@@ -1046,6 +1112,7 @@ export function createDispatchApp(
           JSON.stringify(planning),
           row.id,
         );
+        store.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", "manual-route:" + row.id, "true");
       });
       notify("changed", {}, row.driverId);
       res.json({ ok: true });
@@ -1137,10 +1204,16 @@ export function createDispatchApp(
             JSON.stringify(planning),
             r.id,
           );
-          if (!r.stops.length) store.run("DELETE FROM routes WHERE id=?", r.id);
+          if (!r.stops.length) {
+            store.run("DELETE FROM routes WHERE id=?", r.id);
+            store.run("DELETE FROM settings WHERE key=?", "manual-route:" + r.id);
+          } else {
+            store.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", "manual-route:" + r.id, "true");
+          }
         }
       });
-      notify("changed");
+      notify("changed", {}, source.driverId);
+      notify("changed", {}, target.driverId);
       res.json({ ok: true });
     } finally {
       routingBusy = false;
@@ -1362,6 +1435,8 @@ export function createDispatchApp(
           error:
             "이미 사용 중인 값이거나 다른 배차 작업과 충돌했습니다. 새로고침 후 확인해 주세요.",
         });
+      if (error instanceof GeocodingError || error instanceof PlannedShipmentMutationError)
+        return res.status(error.status).json({ error: error.message });
       const status = error.status ?? 400;
       res.status(status).json({
         error:
@@ -1376,7 +1451,9 @@ export function createDispatchApp(
     server,
     store,
     close: async () => {
+      closing = true;
       clearInterval(liveTimer);
+      await Promise.allSettled(addressJobs);
       await shutdownReceiptOcrPool();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((r) => wss.close(() => r()));

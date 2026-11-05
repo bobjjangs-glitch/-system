@@ -1,6 +1,6 @@
 # Android 휴대폰 설치용 APK
 
-휴대폰용은 `arm64-v8a`와 `armeabi-v7a`를 하나의 APK에 포함한다. 최소 Android 버전은 7.0(API 24)이다. 앱 버전은 1.4.3(12)이며 기사 미리보기·확대 화면의 네이버 지도, 거래명세서 자동 입력·전표 삭제, 전체 경로 보기, 아이콘·시작 화면, 배송 물품·수량, 관리자 위치 공유 화면을 포함한다. 지도 설정은 [NAVER_MAP_SETUP.md](NAVER_MAP_SETUP.md), 전표 기능은 [DEVICE_RECEIPT_OCR.md](DEVICE_RECEIPT_OCR.md)와 [RECEIPT_DELETE.md](RECEIPT_DELETE.md), 네이버 연속 안내·GPS 자동 완료·위치 서비스 복구는 [CONTINUOUS_DRIVING.md](CONTINUOUS_DRIVING.md)를 따른다. Metro나 Expo Go 없이 실행한다.
+휴대폰용은 `arm64-v8a`와 `armeabi-v7a`를 하나의 APK에 포함한다. 최소 Android 버전은 7.0(API 24)이다. 앱 버전은 1.4.4(13)이며 주소만 입력하는 길찾기·개별 기사 배정·미배차와 출발 전 배송지 삭제를 포함한다. 사용법과 주소 검색 인증은 [ADDRESS_DISPATCH.md](ADDRESS_DISPATCH.md)를 따른다. 기존 네이버 전체 지도·전표 자동 입력·위치 공유도 유지한다. Metro나 Expo Go 없이 실행한다.
 
 ## 빌드
 

@@ -548,14 +548,19 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
       )
     )
       throw new Error(`${i + 1}번 물품명과 수량을 확인해 주세요.`);
-    const lat = row.lat == null || row.lat === "" ? null : Number(row.lat),
+    let lat = row.lat == null || row.lat === "" ? null : Number(row.lat),
       lng = row.lng == null || row.lng === "" ? null : Number(row.lng);
     if (
       (lat == null) !== (lng == null) ||
       (lat != null && (!Number.isFinite(lat) || Math.abs(lat) > 90)) ||
-      (lng != null && (!Number.isFinite(lng) || Math.abs(lng) > 180))
-    )
-      throw new Error(`${i + 1}번 위도·경도를 확인해 주세요.`);
+      (lng != null && (!Number.isFinite(lng) || Math.abs(lng) > 180)) ||
+      (lat === 0 && lng === 0)
+    ) {
+      // Old drafts/files may contain a partial or invalid optional location.
+      // Keep the address and let automatic lookup replace it internally.
+      lat = null;
+      lng = null;
+    }
     return {
       recipient: row.recipient.trim(),
       address: row.address.trim(),
