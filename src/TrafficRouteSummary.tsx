@@ -78,8 +78,10 @@ export function TrafficPlannerControls({
   onGenerate: (options: {
     departureAt: string;
     trafficRequired: boolean;
+    groupByRegion: boolean;
   }) => void;
 }) {
+  const [regional, setRegional] = useState(true);
   const [live, setLive] = useState(true);
   const [status, setStatus] = useState<{ configured: boolean } | null>(null);
   const [checking, setChecking] = useState(true);
@@ -116,6 +118,21 @@ export function TrafficPlannerControls({
         회사 왕복과 체류 시간을 포함해 기사별 소요 시간을 맞추고, 배송지 방문
         순서를 비교합니다.
       </Text>
+      <View style={[s.between, { marginBottom: 12 }]}>
+        <Text style={s.h3}>구·시·군별 우선 배차</Text>
+        <Switch
+          accessibilityLabel="구·시·군별 우선 배차"
+          value={regional}
+          onValueChange={setRegional}
+          disabled={busy}
+        />
+      </View>
+      {regional && (
+        <Text style={[s.muted, { marginBottom: 12 }]}>
+          같은 지역을 우선 묶고 기사별 최대 배송지 수 안에서 나눕니다. 지역
+          물량과 기사 수에 따라 한 코스에 인근 지역이 함께 포함될 수 있어요.
+        </Text>
+      )}
       <View style={[s.between, { marginBottom: 12 }]}>
         <Text style={s.h3}>실시간 교통 반영</Text>
         <Switch
@@ -188,6 +205,7 @@ export function TrafficPlannerControls({
         onPress={() =>
           onGenerate({
             trafficRequired: live,
+            groupByRegion: regional,
             departureAt: `${date}T${time}:00+09:00`,
           })
         }

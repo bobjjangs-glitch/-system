@@ -15,6 +15,7 @@ export type ShipmentInput = {
 };
 export type Shipment = ShipmentInput & {
   id: string;
+  region?: string;
   serviceDate: string;
   status: string;
   routeId: string | null;

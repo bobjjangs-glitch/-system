@@ -3,7 +3,8 @@ import { Text, View } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { api } from "./api";
 import { createImportForm } from "./importUpload";
-import { Button, Card, C, s } from "./ui";
+import { Button, Card, C, s, Field } from "./ui";
+import { validSalesDate } from "./salesReference";
 import type { ShipmentInput } from "../server/types";
 type SalesBatch = {
   id: string;
@@ -24,8 +25,10 @@ export default function ErpImportPanel({
   const [counts, setCounts] = useState<{
       customers: number;
       products: number;
+      salesDateFilter?: boolean;
     } | null>(null),
     [busy, setBusy] = useState(false),
+    [salesDate, setSalesDate] = useState(date),
     [message, setMessage] = useState(""),
     [error, setError] = useState("");
   const guard = useRef(false),
@@ -41,6 +44,7 @@ export default function ErpImportPanel({
       mounted.current = false;
     };
   }, []);
+  useEffect(() => setSalesDate(date), [date]);
   const load = async (kind: "sales" | "customers" | "products") => {
     if (guard.current || disabled) return;
     guard.current = true;
@@ -58,6 +62,11 @@ export default function ErpImportPanel({
       });
       if (result.canceled) return;
       const form = await createImportForm(result.assets[0], "excel", date);
+      if (kind === "sales") {
+        if (!validSalesDate(salesDate))
+          throw new Error("판매조회 일자를 YYYY-MM-DD 형식으로 입력해 주세요.");
+        form.append("salesDate", salesDate);
+      }
       const response = await api<any>(
         kind === "sales"
           ? "/api/erp/sales/import"
@@ -84,13 +93,33 @@ export default function ErpImportPanel({
       <Text style={s.h3}>E카운트 자료 가져오기</Text>
       <Text style={[s.muted, { marginTop: 8, marginBottom: 16 }]}>
         E카운트에서 조회 결과를 .xlsx 또는 .csv로 저장한 뒤 선택해 주세요.
-        판매전표별 품목·거래처·금액을 채우고, 거래처 목록에서 주소·연락처를
-        연결합니다.
+        선택한 일자의 판매전표별 품목·거래처·금액을 채우고, 거래처 목록에서
+        주소·연락처를 연결합니다.
       </Text>
+      <Field
+        label="가져올 판매일자 / 출고일"
+        value={salesDate}
+        onChangeText={setSalesDate}
+        placeholder="2026-11-05"
+      />
+      <Text style={[s.muted, { marginBottom: 12 }]}>
+        26/11/05-47은 2026년 11월 5일의 47번 전표입니다. 선택한 날짜만 가져오며
+        배송 예정일은 {date}입니다.
+      </Text>
+      {counts && !counts.salesDateFilter && (
+        <Text style={{ color: C.amber, marginBottom: 12 }}>
+          서버를 최신 버전으로 배포한 뒤 날짜별 판매조회를 이용해 주세요.
+        </Text>
+      )}
       <Button
         title={busy ? "자료를 읽는 중…" : "판매조회 내역 가져오기"}
         onPress={() => load("sales")}
-        disabled={busy || disabled}
+        disabled={
+          busy ||
+          disabled ||
+          !validSalesDate(salesDate) ||
+          !counts?.salesDateFilter
+        }
       />
       <View style={{ gap: 10, marginTop: 12 }}>
         <Button

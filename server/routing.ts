@@ -1,3 +1,4 @@
+import { deliveryRegion } from "../src/deliveryRegion.ts";
 import type {
   Company,
   Driver,
@@ -68,6 +69,7 @@ export function optimizeAssignments(
   depot: Point,
   shipments: Shipment[],
   drivers: Driver[],
+  options: { groupByRegion?: boolean } = {},
 ): { driver: Driver; stops: LocatedShipment[] }[] {
   const available = drivers.filter((d) => d.active && d.capacity > 0);
   if (!available.length)
@@ -79,6 +81,12 @@ export function optimizeAssignments(
   if (available.reduce((n, d) => n + d.capacity, 0) < shipments.length)
     throw new Error(
       "기사별 최대 배송지 수가 부족합니다. 기사 추가 또는 최대 배송지 수 변경 후 다시 배차해 주세요.",
+    );
+  if (options.groupByRegion)
+    return regionalAssignments(
+      depot,
+      shipments as LocatedShipment[],
+      available,
     );
   // Sweep nearby destinations together, then balance using per-driver capacity.
   const sorted = (shipments as LocatedShipment[])
@@ -114,6 +122,110 @@ export function optimizeAssignments(
     groups.push({ driver: available[i], stops });
   }
   return groups;
+}
+/** Partition neighboring regional blocks while respecting every driver's hard capacity and feasible five-stop floor. */
+function regionalAssignments(
+  depot: Point,
+  stops: LocatedShipment[],
+  available: Driver[],
+) {
+  const drivers = available.slice(0, Math.min(available.length, stops.length));
+  if (!stops.length) return [];
+  const blocks = new Map<string, LocatedShipment[]>();
+  for (const stop of stops) {
+    const region = deliveryRegion(stop.address),
+      key = region.key === "unknown" ? "unknown:" + stop.id : region.key;
+    const list = blocks.get(key) ?? [];
+    list.push(stop);
+    blocks.set(key, list);
+  }
+  const angle = (list: Point[]) =>
+    Math.atan2(
+      list.reduce((n, p) => n + p.lat - depot.lat, 0),
+      list.reduce((n, p) => n + p.lng - depot.lng, 0),
+    );
+  const ordered = [...blocks.values()]
+    .sort((a, b) => angle(a) - angle(b))
+    .flatMap((list) => list.sort((a, b) => angle([a]) - angle([b])));
+  const regions = ordered.map((s) => {
+    const r = deliveryRegion(s.address);
+    return r.key === "unknown" ? "unknown:" + s.id : r.key;
+  });
+  const floors = drivers.map((d) => Math.min(5, d.capacity));
+  if (floors.reduce((a, b) => a + b, 0) > stops.length) floors.fill(1);
+  const n = stops.length,
+    limits = drivers.map((d) => Math.min(n, d.capacity)),
+    path: number[][] = Array.from({ length: drivers.length + 1 }, () =>
+      Array(n + 1).fill(-1),
+    );
+  let previous = Array(n + 1).fill(Infinity);
+  previous[0] = 0;
+  const edge = [0];
+  for (let i = 1; i < n; i++)
+    edge[i] = edge[i - 1] + distanceKm(ordered[i - 1], ordered[i]);
+  for (let d = 0; d < drivers.length; d++) {
+    const next = Array(n + 1).fill(Infinity),
+      remainingMinimum = floors.slice(d + 1).reduce((a, b) => a + b, 0),
+      remainingCapacity = limits.slice(d + 1).reduce((a, b) => a + b, 0);
+    for (let end = 1; end <= n; end++) {
+      if (n - end < remainingMinimum || n - end > remainingCapacity) continue;
+      const distinct = new Set<string>();
+      for (
+        let start = end - 1;
+        start >= Math.max(0, end - limits[d]);
+        start--
+      ) {
+        distinct.add(regions[start]);
+        const count = end - start;
+        if (count < floors[d] || !Number.isFinite(previous[start])) continue;
+        const split = end < n && regions[end - 1] === regions[end] ? 1 : 0;
+        const roughKm =
+          distanceKm(depot, ordered[start]) +
+          edge[end - 1] -
+          edge[start] +
+          distanceKm(ordered[end - 1], depot);
+        const cost =
+          previous[start] +
+          Math.max(0, distinct.size - 1) * 10000 +
+          split * 100 +
+          Math.pow(count - n / drivers.length, 2) / (n * n) +
+          Math.min(roughKm, 5000) * 0.001;
+        if (cost < next[end]) {
+          next[end] = cost;
+          path[d + 1][end] = start;
+        }
+      }
+    }
+    previous = next;
+  }
+  if (!Number.isFinite(previous[n]))
+    throw new Error("지역별 배차의 기사 최대 배송지 수를 확인해 주세요.");
+  const groups: { driver: Driver; stops: LocatedShipment[] }[] = [];
+  let end = n;
+  for (let d = drivers.length; d > 0; d--) {
+    const start = path[d][end];
+    groups.unshift({
+      driver: drivers[d - 1],
+      stops: orderStops(depot, ordered.slice(start, end)),
+    });
+    end = start;
+  }
+  return groups;
+}
+function regionalMix(groups: { stops: LocatedShipment[] }[]) {
+  return groups.reduce(
+    (sum, g) =>
+      sum +
+      Math.max(
+        0,
+        new Set(
+          g.stops
+            .map((s) => deliveryRegion(s.address).key)
+            .filter((k) => k !== "unknown"),
+        ).size - 1,
+      ),
+    0,
+  );
 }
 async function staticEstimateRoute(
   company: Company,
@@ -179,6 +291,7 @@ export type RouteEstimate = {
   legTimesEstimated?: boolean;
 };
 export type PlanningOptions = {
+  groupByRegion?: boolean;
   roadRouting?: boolean;
   trafficRequired?: boolean;
   departureAt?: string;
@@ -326,7 +439,9 @@ export async function planDispatch(
   drivers: Driver[],
   options: PlanningOptions = {},
 ): Promise<PlannedGroup[]> {
-  const initial = optimizeAssignments(company, shipments, drivers);
+  const initial = optimizeAssignments(company, shipments, drivers, {
+    groupByRegion: options.groupByRegion,
+  });
   const client = provider(options);
   const departure = resolveDeparture(options);
   const evaluate = async (group: {
@@ -430,6 +545,12 @@ export async function planDispatch(
     }
     highStops = orderStops(company, highStops);
     lowStops = orderStops(company, lowStops);
+    if (
+      options.groupByRegion &&
+      regionalMix([{ stops: highStops }, { stops: lowStops }]) >
+        regionalMix([high.g, low.g])
+    )
+      break;
     const required = [highStops, lowStops].map((s) => [company, ...s, company]);
     if (client && !client.canEvaluateMany(required)) break;
     const changed = await Promise.all([

@@ -92,6 +92,9 @@ import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
 import { hasNavigationPoint } from "./src/addressNavigation";
 import { createDriverMapData } from "./src/driverMapData";
+import RegionalDispatchSummary from "./src/RegionalDispatchSummary";
+import { deliveryRegion, deliveryRegionGroups } from "./src/deliveryRegion";
+import { parseSalesReference } from "./src/salesReference";
 import CatalogPicker from "./src/CatalogPicker";
 import ErpImportPanel from "./src/ErpImportPanel";
 import DispatchBoardScreen from "./src/DispatchBoardScreen";
@@ -638,6 +641,8 @@ function Admin({
     [detail, setDetail] = useState<Shipment | null>(null),
     [assignment, setAssignment] = useState<Shipment | null>(null),
     [confirmClear, setConfirmClear] = useState(false);
+  const [regionFilter, setRegionFilter] = useState("all");
+  useEffect(() => setRegionFilter("all"), [date]);
   const [boardOpen, setBoardOpen] = useState(false);
   const [boardSaving, setBoardSaving] = useState(false);
   const [boardMessage, setBoardMessage] = useState("");
@@ -2154,6 +2159,11 @@ function Admin({
               )}
             </Card>
             <DateControls date={date} setDate={setDate} />
+            <RegionalDispatchSummary
+              shipments={data.shipments}
+              selected={regionFilter}
+              onSelect={setRegionFilter}
+            />
             {!data.routes.length && (
               <Empty
                 title="아직 배차된 코스가 없어요"
@@ -2231,6 +2241,14 @@ function Admin({
                     이 코스에 추가됩니다.
                   </Text>
                 )}
+                <View style={[s.row, { flexWrap: "wrap", marginBottom: 10 }]}>
+                  {deliveryRegionGroups(route.stops).map((g) => (
+                    <Badge
+                      key={g.key}
+                      text={`${g.label} ${g.shipments.length}곳`}
+                    />
+                  ))}
+                </View>
                 <RoutePlanningSummary route={route} />
                 <TimelineCompany name={route.company.name} label="출발" />
                 {route.stops.map((stop, index) => (
@@ -2282,7 +2300,12 @@ function Admin({
               </Card>
             ))}
             {data.shipments
-              .filter((s) => s.status === "pending")
+              .filter(
+                (s) =>
+                  s.status === "pending" &&
+                  (regionFilter === "all" ||
+                    deliveryRegion(s.address).key === regionFilter),
+              )
               .map((shipment) => (
                 <Pressable
                   key={shipment.id}
@@ -2294,6 +2317,14 @@ function Admin({
                       <View style={{ flex: 1 }}>
                         <Text style={s.h3}>{shipment.recipient}</Text>
                         <Text style={s.muted}>{shipment.address}</Text>
+                        <Text
+                          style={[s.muted, { color: C.green, marginTop: 5 }]}
+                        >
+                          {deliveryRegion(shipment.address).label}
+                          {shipment.salesReference
+                            ? " · 전표 " + shipment.salesReference
+                            : ""}
+                        </Text>
                       </View>
                       <Badge
                         text={
@@ -2690,6 +2721,23 @@ function Admin({
                     </Pressable>
                   )}
                 </View>
+                {!row.erpSourceKey && (
+                  <Field
+                    label="판매번호 (선택)"
+                    value={row.salesReference ?? ""}
+                    placeholder="26/11/05-47"
+                    onChangeText={(salesReference) =>
+                      updateReview(index, { salesReference })
+                    }
+                  />
+                )}
+                {parseSalesReference(row.salesReference) && (
+                  <Text style={[s.muted, { marginBottom: 10 }]}>
+                    전표일 {parseSalesReference(row.salesReference)!.date} ·{" "}
+                    {parseSalesReference(row.salesReference)!.sequence}번 · 배송
+                    예정일 {review.serviceDate}
+                  </Text>
+                )}
                 {!!row.salesReference && (
                   <Text style={[s.muted, { marginBottom: 12 }]}>
                     판매전표 {row.salesReference}
@@ -2721,6 +2769,9 @@ function Admin({
                   }
                   multiline
                 />
+                <Text style={[s.muted, { marginBottom: 10 }]}>
+                  지역 · {deliveryRegion(row.address).label}
+                </Text>
                 <Field
                   label="연락처"
                   value={row.phone ?? ""}
@@ -2959,8 +3010,17 @@ function Admin({
           visible
           data={{
             drivers: data.drivers,
-            routes: data.routes,
-            shipments: data.shipments,
+            routes: data.routes.map((route) => ({
+              ...route,
+              stops: route.stops.map((stop) => ({
+                ...stop,
+                region: deliveryRegion(stop.address).label,
+              })),
+            })),
+            shipments: data.shipments.map((stop) => ({
+              ...stop,
+              region: deliveryRegion(stop.address).label,
+            })),
             serviceDate: date,
             revision: data.dispatchRevision ?? "",
             busy: boardSaving,

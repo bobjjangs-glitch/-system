@@ -1,6 +1,6 @@
 # Android 휴대폰 설치용 APK
 
-휴대폰용은 `arm64-v8a`와 `armeabi-v7a`를 하나의 APK에 포함한다. 최소 Android 버전은 7.0(API 24)이다. 앱 버전은 1.5.0(14)이며 터치 배차·거래처/품목 검색·E카운트 판매조회 엑셀 가져오기를 포함한다. [터치 배차·E카운트 자료 안내](ECOUNT_TOUCH_DISPATCH.md)를 따른다. 주소만 입력하는 길찾기·개별 기사 배정·미배차와 출발 전 배송지 삭제도 포함한다. 사용법과 주소 검색 인증은 [ADDRESS_DISPATCH.md](ADDRESS_DISPATCH.md)를 따른다. 기존 네이버 전체 지도·전표 자동 입력·위치 공유도 유지한다. Metro나 Expo Go 없이 실행한다.
+휴대폰용은 `arm64-v8a`와 `armeabi-v7a`를 하나의 APK에 포함한다. 최소 Android 버전은 7.0(API 24)이다. 앱 버전은 1.5.1(15)이며 터치 배차·거래처/품목 검색·일자별 E카운트 판매조회 엑셀 가져오기·구/시/군별 우선 배차를 포함한다. [터치 배차·E카운트 자료 안내](ECOUNT_TOUCH_DISPATCH.md)를 따른다. 주소만 입력하는 길찾기·개별 기사 배정·미배차와 출발 전 배송지 삭제도 포함한다. 사용법과 주소 검색 인증은 [ADDRESS_DISPATCH.md](ADDRESS_DISPATCH.md)를 따른다. 기존 네이버 전체 지도·전표 자동 입력·위치 공유도 유지한다. Metro나 Expo Go 없이 실행한다.
 
 ## 빌드
 

@@ -2,6 +2,11 @@ import ExcelJS from "exceljs";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 import type { Store } from "./database.ts";
+import {
+  parseSalesReference,
+  readSalesDate,
+  validSalesDate,
+} from "../src/salesReference.ts";
 import type { ShipmentInput } from "./types.ts";
 
 export type CatalogCustomer = {
@@ -340,11 +345,62 @@ export function searchCatalog(
   }
   return rows.slice(0, 30);
 }
+/** Include keys used before date normalization so older saved imports still deduplicate. */
+export function salesImportKeys(row: ShipmentInput): string[] {
+  const parsed = parseSalesReference(row.salesReference),
+    customer = row.customerCode || row.recipient;
+  const refs = new Set([row.salesReference ?? ""]);
+  if (parsed) {
+    const [y, m, d] = parsed.date.split("-");
+    for (const year of [y, y.slice(2)])
+      for (const padded of [true, false])
+        for (const sep of ["/", "-", "."])
+          refs.add(
+            [
+              year,
+              padded ? m : String(Number(m)),
+              padded ? d : String(Number(d)),
+            ].join(sep) +
+              "-" +
+              parsed.sequence,
+          );
+    refs.add(parsed.canonical);
+  }
+  return [
+    ...new Set([
+      ...(row.erpSourceKey ? [row.erpSourceKey] : []),
+      ...[...refs]
+        .filter(Boolean)
+        .map((ref) => "ecount-sale-" + hash(JSON.stringify([ref, customer]))),
+    ]),
+  ];
+}
+export function savedManualSale(store: Store, row: ShipmentInput) {
+  const parsed = parseSalesReference(row.salesReference);
+  if (!parsed) return false;
+  return store
+    .all(
+      "SELECT salesReference,customerCode,recipient FROM shipments WHERE erpSourceKey IS NULL AND salesReference IS NOT NULL",
+    )
+    .some(
+      (previous) =>
+        parseSalesReference(previous.salesReference)?.canonical ===
+          parsed.canonical &&
+        (previous.customerCode && row.customerCode
+          ? previous.customerCode === row.customerCode
+          : key(previous.recipient) === key(row.recipient)),
+    );
+}
 export async function parseSalesExport(
   store: Store,
   buffer: Buffer,
   fileName: string,
+  options: { salesDate?: string } = {},
 ) {
+  if (options.salesDate !== undefined && !validSalesDate(options.salesDate))
+    throw new ErpImportError(
+      "판매조회 일자를 YYYY-MM-DD 형식으로 확인해 주세요.",
+    );
   const { sheet, cols, header } = await table(buffer, fileName, "sales");
   const warnings = new Set<string>();
   const groups = new Map<string, ShipmentInput>();
@@ -352,7 +408,10 @@ export async function parseSalesExport(
   let previousDoc = "",
     previousCustomer = "",
     previousCode = "";
-  let skipped = 0;
+  let skipped = 0,
+    otherDateRows = 0,
+    undatedRows = 0,
+    matchedRows = 0;
   for (let i = header + 1; i <= sheet.rowCount; i++) {
     const r = reader(sheet, cols, i);
     const money = reader(sheet, cols, i, true);
@@ -360,28 +419,26 @@ export async function parseSalesExport(
       code = r("productCode");
     if (!name && !code) continue;
     if (/^(총?합계|소계|계)$/.test(name)) continue;
-    const q = number(r("quantity"), "수량", i, false)!;
-    if (q <= 0 || /취소|반품/.test(r("state"))) {
-      skipped++;
-      continue;
-    }
-    won(r, i);
     let customerCode = r("customerCode"),
       customer = r("customer");
     let doc =
-      r("document") || [r("date"), r("number")].filter(Boolean).join("-");
+      r("document") ||
+      (r("number") ? [r("date"), r("number")].filter(Boolean).join("-") : "");
     if (
       !customer &&
       !customerCode &&
       previousDoc &&
-      (!doc || doc === previousDoc)
+      (!doc ||
+        doc === previousDoc ||
+        (parseSalesReference(doc)?.canonical ===
+          parseSalesReference(previousDoc)?.canonical &&
+          !!parseSalesReference(doc)))
     ) {
       customer = previousCustomer;
       customerCode = previousCode;
       doc = previousDoc;
     }
-    if (!customer && !customerCode)
-      throw new ErpImportError(`${i}행 거래처를 확인해 주세요.`);
+
     if (doc) {
       previousDoc = doc;
       previousCustomer = customer;
@@ -390,6 +447,44 @@ export async function parseSalesExport(
       warnings.add(
         "전표번호 열이 없어 동일 파일을 기준으로만 중복을 확인합니다. 판매조회에 일자-No. 또는 전표번호를 포함해 주세요.",
       );
+    const dateColumn = readSalesDate(r("date"));
+    const documentDate = parseSalesReference(doc);
+    if (!documentDate && dateColumn && /^\d{1,12}$/.test(doc))
+      doc = dateColumn.replace(/-/g, "/") + "-" + doc;
+    const parsedReference = parseSalesReference(doc),
+      saleDate = parsedReference?.date ?? dateColumn;
+    if (parsedReference) previousDoc = doc;
+    if (options.salesDate) {
+      if (
+        r("document") &&
+        /^\d{2,4}[/.\-]\d{1,2}[/.\-]\d{1,2}[-–—]/.test(r("document")) &&
+        !parsedReference
+      ) {
+        undatedRows++;
+        continue;
+      }
+      if (!saleDate) {
+        undatedRows++;
+        continue;
+      }
+      if (saleDate !== options.salesDate) {
+        otherDateRows++;
+        continue;
+      }
+      if (parsedReference && dateColumn && parsedReference.date !== dateColumn)
+        throw new ErpImportError(
+          `${i}행 판매번호와 판매일자가 다릅니다. 원본을 확인해 주세요.`,
+        );
+    }
+    matchedRows++;
+    if (!customer && !customerCode)
+      throw new ErpImportError(`${i}행 거래처를 확인해 주세요.`);
+    const q = number(r("quantity"), "수량", i, false)!;
+    if (q <= 0 || /취소|반품/.test(r("state"))) {
+      skipped++;
+      continue;
+    }
+    won(r, i);
     const matches = customerCode
       ? store.all(
           "SELECT * FROM catalog_customers WHERE code=? AND source='ecount'",
@@ -430,7 +525,10 @@ export async function parseSalesExport(
     const spec = r("specification") || product?.specification || "";
     if (spec && !name.includes(spec)) name += " " + spec;
     const documentKey = doc
-      ? JSON.stringify([doc, customerCode || customer])
+      ? JSON.stringify([
+          parseSalesReference(doc)?.canonical ?? doc,
+          customerCode || customer,
+        ])
       : JSON.stringify([fileHash, i]);
     const sourceKey = "ecount-sale-" + hash(documentKey);
     let draft = groups.get(sourceKey);
@@ -492,16 +590,27 @@ export async function parseSalesExport(
     );
   const drafts = [...groups.values()];
   if (!drafts.length)
-    throw new ErpImportError("가져올 정상 판매내역이 없습니다.");
+    throw new ErpImportError(
+      options.salesDate
+        ? `${options.salesDate}에 가져올 정상 판매내역이 없습니다. 다른 일자 ${otherDateRows}행·일자 확인 불가 ${undatedRows}행을 제외했습니다. 판매번호 또는 판매일자 열을 확인해 주세요.`
+        : "가져올 정상 판매내역이 없습니다.",
+    );
+  if (options.salesDate)
+    warnings.add(
+      `판매일자 ${options.salesDate}만 가져왔습니다. 다른 일자 ${otherDateRows}행·일자 확인 불가 ${undatedRows}행은 제외했습니다.`,
+    );
   if (drafts.length > 2000)
     throw new ErpImportError(
       "한 번에 최대 2,000개 판매전표를 가져올 수 있습니다.",
     );
-  const existing = drafts.filter((r) =>
-    store.one(
-      "SELECT sourceKey FROM erp_sales_links WHERE sourceKey=?",
-      r.erpSourceKey,
-    ),
+  const existing = drafts.filter(
+    (row) =>
+      salesImportKeys(row).some((key) =>
+        store.one(
+          "SELECT sourceKey FROM erp_sales_links WHERE sourceKey=?",
+          key,
+        ),
+      ) || savedManualSale(store, row),
   );
   const fresh = drafts.filter((r) => !existing.includes(r));
   if (existing.length)
@@ -510,5 +619,15 @@ export async function parseSalesExport(
     throw new ErpImportError(
       "모든 판매전표가 이미 등록되어 있습니다. 중복으로 가져오지 않았습니다.",
     );
-  return { drafts: fresh, warnings: [...warnings] };
+  return {
+    drafts: fresh,
+    warnings: [...warnings],
+    salesDate: options.salesDate,
+    dateSummary: {
+      matchedRows,
+      otherDateRows,
+      undatedRows,
+      duplicateDocuments: existing.length,
+    },
+  };
 }

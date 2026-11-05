@@ -43,7 +43,7 @@ import { dispatchRevision, dropShipment } from "./dragDispatch.ts";
 import {
   importCatalog,
   searchCatalog,
-  parseSalesExport,
+  parseSalesExport, salesImportKeys, savedManualSale,
 } from "./erpCatalog.ts";
 import { seedDemo } from "./demo.ts";
 import { createMapDocument } from "../src/mapDocument.ts";
@@ -734,7 +734,7 @@ export function createDispatchApp(
   });
   app.get("/api/erp/status", admin, (_req, res) =>
     res.json({
-      mode: "ecount-excel",
+      mode: "ecount-excel", salesDateFilter: true, regionalDispatch: true,
       customers: store.one("SELECT COUNT(*) AS n FROM catalog_customers").n,
       products: store.one("SELECT COUNT(*) AS n FROM catalog_products").n,
     }),
@@ -764,12 +764,14 @@ export function createDispatchApp(
     upload.single("file"),
     async (req, res) => {
       assert(req.file, "E카운트 판매조회 엑셀을 선택해 주세요.");
+      assert(req.body.salesDate===undefined||typeof req.body.salesDate==="string","판매조회 일자를 확인해 주세요.");
       const date = dateValue(req.body.serviceDate),
         file = req.file;
       const parsed = await parseSalesExport(
         store,
         file.buffer,
         file.originalname,
+        { salesDate: req.body.salesDate === undefined ? undefined : dateValue(req.body.salesDate) },
       );
       const importId = id(),
         storedName = importId + extname(file.originalname).toLowerCase(),
@@ -788,7 +790,7 @@ export function createDispatchApp(
           JSON.stringify(parsed.drafts),
           date,
           new Date().toISOString(),
-          JSON.stringify({ source: "ecount-excel", warnings: parsed.warnings }),
+          JSON.stringify({ source: "ecount-excel", warnings: parsed.warnings, salesDate: parsed.salesDate, dateSummary: parsed.dateSummary }),
         );
       } catch (error) {
         try {
@@ -806,7 +808,7 @@ export function createDispatchApp(
           drafts: parsed.drafts,
           serviceDate: date,
           status: "review",
-          recognitionWarnings: parsed.warnings,
+          recognitionWarnings: parsed.warnings, salesDate: parsed.salesDate, dateSummary: parsed.dateSummary,
         });
     },
   );
@@ -1071,20 +1073,11 @@ export function createDispatchApp(
           "판매내역은 원본의 전표번호를 유지해 주세요.",
           409,
         );
-      for (const key of keys) {
-        assert(
-          !store.one(
-            "SELECT sourceKey FROM erp_sales_links WHERE sourceKey=?",
-            key,
-          ),
-          "이미 등록한 판매전표가 포함되어 있습니다. 중복 내역을 제외하고 다시 가져와 주세요.",
-          409,
-        );
-        store.run(
-          "INSERT INTO erp_sales_links(sourceKey,importId) VALUES(?,?)",
-          key,
-          batch.id,
-        );
+      for (const row of rows.filter(row=>row.erpSourceKey)) {
+        const original = originals.find(item=>item.erpSourceKey===row.erpSourceKey)!;
+        const aliases = salesImportKeys(original);
+        assert(!aliases.some(key=>store.one("SELECT sourceKey FROM erp_sales_links WHERE sourceKey=?",key))&&!savedManualSale(store,original),"이미 등록한 판매전표가 포함되어 있습니다. 중복 내역을 제외하고 다시 가져와 주세요.",409);
+        for(const key of aliases)store.run("INSERT INTO erp_sales_links(sourceKey,importId) VALUES(?,?)",key,batch.id);
       }
       for (const row of rows) insertShipment(row, batch.serviceDate, batch.id);
       store.run(
@@ -1306,7 +1299,7 @@ export function createDispatchApp(
     if (values.address !== old.address && !isPoint(req.body)) { values.lat = null; values.lng = null; }
     const row = validateShipments([values])[0];
     store.run(
-      "UPDATE shipments SET recipient=?,address=?,phone=?,items=?,notes=?,lat=?,lng=?,amount=?,customerCode=? WHERE id=?",
+      "UPDATE shipments SET recipient=?,address=?,phone=?,items=?,notes=?,lat=?,lng=?,amount=?,customerCode=?,salesReference=? WHERE id=?",
       row.recipient,
       row.address,
       row.phone ?? "",
@@ -1316,6 +1309,7 @@ export function createDispatchApp(
       row.lng ?? null,
       row.amount ?? null,
       row.customerCode ?? null,
+      old.erpSourceKey ? old.salesReference : row.salesReference ?? null,
       old.id,
     );
     notify("changed");
@@ -1484,7 +1478,9 @@ export function createDispatchApp(
           company: store.company(),
         });
       const original = snapshot();
+      assert(req.body.groupByRegion===undefined||typeof req.body.groupByRegion==="boolean","지역별 배차 설정을 확인해 주세요.");
       const estimated = await planDispatch(company, shipments, drivers, {
+        groupByRegion: req.body.groupByRegion===true,
         roadRouting: options.roadRouting !== false,
         trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : undefined,
         departureAt: req.body.departureAt,
