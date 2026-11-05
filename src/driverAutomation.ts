@@ -15,7 +15,12 @@ export type DriverAutomation = {
   arrival?: ArrivalState;
   lastCompletion?: { sequence: number | null; at: string; status?: string };
   pendingCompletion?: { stopId: string; point: Point; at: string };
-  pendingArrival?: { stopId: string; point: Point; at: string };
+  pendingArrival?: {
+    stopId: string;
+    point: Point;
+    at: string;
+    notified?: boolean;
+  };
   pendingNavigation?: { completedStopId: string; at: string };
   dismissedUntil?: number;
 };
@@ -183,7 +188,8 @@ export async function prepareDrivingNotifications() {
   ).granted;
 }
 async function notifyArrival(route: Route, stop: Shipment) {
-  if (Platform.OS === "web" || AppState.currentState === "active") return;
+  if (Platform.OS === "web" || AppState.currentState === "active") return false;
+  if (!(await Notifications.getPermissionsAsync()).granted) return false;
   await Notifications.scheduleNotificationAsync({
     identifier: "dispatch-arrival-" + stop.id,
     content: {
@@ -200,6 +206,7 @@ async function notifyArrival(route: Route, stop: Shipment) {
     },
     trigger: { channelId: "dispatch-arrival-v1" },
   });
+  return true;
 }
 async function session(background: boolean) {
   if (!background) {
@@ -301,8 +308,19 @@ function processDriverLocation(
       };
       await save(settings);
       signalDriverArrival();
-      await notifyArrival(route, result.stop).catch(() => {});
-      return { stop: false };
+    }
+    if (settings.pendingArrival && !settings.pendingArrival.notified) {
+      const pending = settings.pendingArrival,
+        stop = route.stops.find(
+          (item) => item.id === pending.stopId && item.status === "assigned",
+        );
+      if (stop && (await notifyArrival(route, stop).catch(() => false))) {
+        if (generation !== expected) {
+          dismissNotice(stop.id);
+          return { stop: false };
+        }
+        pending.notified = true;
+      }
     }
     if (generation === expected) await save(settings);
     return { stop: false };

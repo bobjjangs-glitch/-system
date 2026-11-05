@@ -191,3 +191,21 @@ test("업데이트 전의 미확인 자동완료 요청은 다시 보내지 않�
     true,
   );
 });
+
+test("앱에서 확인하지 않은 도착은 앱을 닫아도 한 번 알림으로 이어진다", async (t) => {
+  const e = await setup(t);
+  e.state.appState = "active";
+  for (const sec of [0, 10, 10, 10])
+    await e.module.handleDriverLocation(e.gps(sec), false);
+  assert.equal(e.notices.length, 0);
+  e.state.appState = "background";
+  await e.module.handleDriverLocation(e.gps(10), true);
+  assert.equal(e.notices.length, 1);
+  assert.equal(
+    (await e.module.getDriverAutomation()).pendingArrival.notified,
+    true,
+  );
+  await e.module.handleDriverLocation(e.gps(10), true);
+  assert.equal(e.notices.length, 1);
+  assert.equal(e.route.stops[0].status, "assigned");
+});
