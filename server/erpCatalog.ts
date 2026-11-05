@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { Readable } from "node:stream";
+import { loadSpreadsheet } from "./spreadsheet.ts";
 import { createHash } from "node:crypto";
 import type { Store } from "./database.ts";
 import {
@@ -114,51 +114,29 @@ async function table(
   fileName: string,
   kind: "customers" | "products" | "sales",
 ) {
-  const book = new ExcelJS.Workbook();
-  if (/\.csv$/i.test(fileName)) {
-    let text: string;
-    if (buffer[0] === 0xff && buffer[1] === 0xfe)
-      text = new TextDecoder("utf-16le").decode(buffer);
-    else {
-      try {
-        text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-      } catch {
-        text = new TextDecoder("euc-kr").decode(buffer);
-      }
+  const book = await loadSpreadsheet(buffer, fileName);
+  for (const sheet of book.worksheets) {
+    for (let row = 1; row <= Math.min(sheet.rowCount, 30); row++) {
+      const cols: Columns = {};
+      sheet.getRow(row).eachCell((cell, index) => {
+        const header = key(cellText(cell.value));
+        for (const [name, names] of Object.entries(aliases))
+          if (
+            names.some((alias) => key(alias) === header) &&
+            cols[name as keyof Columns] === undefined
+          )
+            cols[name as keyof Columns] = index;
+      });
+      const found =
+        kind === "customers"
+          ? cols.customer !== undefined
+          : kind === "products"
+            ? cols.product !== undefined || cols.productCode !== undefined
+            : cols.quantity !== undefined &&
+              (cols.product !== undefined || cols.productCode !== undefined) &&
+              (cols.customer !== undefined || cols.customerCode !== undefined);
+      if (found) return { sheet, cols, header: row };
     }
-    await book.csv.read(
-      Readable.from(Buffer.from(text.replace(/^\uFEFF/, ""), "utf8")),
-    );
-  } else if (/\.xlsx$/i.test(fileName)) await book.xlsx.load(buffer as any);
-  else
-    throw new ErpImportError(
-      "이카운트에서 저장한 .xlsx 또는 .csv 파일을 선택해 주세요.",
-    );
-  const sheet = book.worksheets[0];
-  if (!sheet || sheet.rowCount > 10030 || sheet.columnCount > 150)
-    throw new ErpImportError(
-      "첫 시트의 자료는 10,000행·150열 이내로 나눠 주세요.",
-    );
-  for (let row = 1; row <= Math.min(sheet.rowCount, 30); row++) {
-    const cols: Columns = {};
-    sheet.getRow(row).eachCell((cell, index) => {
-      const header = key(cellText(cell.value));
-      for (const [name, names] of Object.entries(aliases))
-        if (
-          names.some((alias) => key(alias) === header) &&
-          cols[name as keyof Columns] === undefined
-        )
-          cols[name as keyof Columns] = index;
-    });
-    const found =
-      kind === "customers"
-        ? cols.customer !== undefined
-        : kind === "products"
-          ? cols.product !== undefined || cols.productCode !== undefined
-          : cols.quantity !== undefined &&
-            (cols.product !== undefined || cols.productCode !== undefined) &&
-            (cols.customer !== undefined || cols.customerCode !== undefined);
-    if (found) return { sheet, cols, header: row };
   }
   throw new ErpImportError(
     kind === "sales"

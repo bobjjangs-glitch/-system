@@ -14,6 +14,12 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
 #map-error{display:none;position:absolute;inset:0;z-index:110;align-items:center;justify-content:center;flex-direction:column;padding:24px;background:#eef2f4;text-align:center;color:#52645d;font-size:14px;gap:16px}
 #configure,#retry{border:0;border-radius:8px;background:#165b52;color:white;padding:12px 18px;cursor:pointer;font-weight:700}
 #retry{display:none;background:white;color:#165b52}
+
+.driver-pin{width:104px;height:74px;display:flex;align-items:center;flex-direction:column;filter:drop-shadow(0 3px 4px #0005);background:transparent;border:0;line-height:normal;box-sizing:border-box}
+.driver-dot{width:46px;height:46px;border:4px solid white;border-radius:50%;background:#145c4c;display:flex;align-items:center;justify-content:center;color:white;box-sizing:border-box;position:relative}
+.driver-pin.driver-idle .driver-dot{background:#758179}.driver-name{margin-top:3px;background:#173e35;color:white;border:2px solid white;border-radius:8px;padding:3px 8px;font-size:12px;font-weight:800;white-space:nowrap;max-width:104px;overflow:hidden;text-overflow:ellipsis}
+.driver-pin.driver-idle .driver-name{background:#66736c}.driver-pin.driver .driver-dot:before{content:'';position:absolute;inset:-8px;border:3px solid #43b88a77;border-radius:50%;animation:driver-pulse 2s infinite}
+@keyframes driver-pulse{50%{transform:scale(1.18);opacity:.3}}@media(prefers-reduced-motion:reduce){.driver-dot:before{animation:none!important}}
 </style></head><body><div id="map" aria-label="네이버 실시간 운행 지도"></div>
 <button id="fit-route" type="button" aria-label="전체 경로 보기">전체 경로</button>
 <div id="map-loading" role="status">네이버 지도를 불러오는 중이에요.</div>
@@ -56,11 +62,12 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
   document.getElementById('fit-route').onclick=fit;
   function icon(label,cls){
     const clean=String(label??'').replace(/[<>&"']/g,'');
+    if(cls==='driver'||cls==='driver-idle')return {content:'<div class="driver-pin '+cls+'" role="img" aria-label="기사 '+clean+'"><span class="driver-dot"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M3 4h11v12H3zM14 9h4l3 4v3h-7"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></svg></span><span class="driver-name">'+clean+'</span></div>',size:new maps.Size(104,74),anchor:new maps.Point(52,23)};
     return {content:'<div class="number '+(cls||'')+'">'+clean+'</div>',size:new maps.Size(32,32),anchor:new maps.Point(16,16)};
   }
   function content(text){const el=document.createElement('div');el.style.cssText='padding:12px;max-width:260px;font-size:13px';el.textContent=text;return el;}
   function marker(p,label,text,cls){
-    const marker=new maps.Marker({map:map,position:coordinate(p),icon:icon(label,cls),zIndex:cls==='driver'?100:10});
+    const marker=new maps.Marker({map:map,position:coordinate(p),icon:icon(label,cls),zIndex:cls==='driver'?1200:cls==='driver-idle'?1100:10});
     const info=new maps.InfoWindow({content:content(text),borderWidth:0});
     const listener=maps.Event.addListener(marker,'click',function(){if(info.getMap())info.close();else info.open(map,marker);});
     return {marker:marker,info:info,listener:listener,label:label,cls:cls};
@@ -99,13 +106,13 @@ html,body,#map{height:100%;margin:0;background:#eef2f4;font-family:system-ui}
       visible.add(driver.id);
       const age=Date.now()-Date.parse(p.recordedAt);
       const sharing=age>=0&&age<120000&&routes.some(r=>r.id===p.routeId&&(r.status==='active'||r.status==='returning'));
-      const label=driver.name.slice(-2),cls=sharing?'driver':'driver-idle';
-      const text=driver.name+(sharing?' · 위치 수신 중':' · 마지막 수신 위치');
+      const label=driver.name.slice(0,12),cls=sharing?'driver':'driver-idle';
+      const text=driver.name+(sharing?' · 위치 수신 중':' · 마지막 수신 위치')+' · '+(Number.isFinite(age)?Math.max(0,Math.round(age/1000))+'초 전':'수신 시각 확인 필요');
       const existing=driverMarkers.get(driver.id);
       if(existing){
         existing.marker.setPosition(coordinate(p));existing.info.setContent(content(text));
         if(existing.label!==label||existing.cls!==cls)existing.marker.setIcon(icon(label,cls));
-        existing.marker.setZIndex(sharing?100:20);existing.label=label;existing.cls=cls;
+        existing.marker.setZIndex(sharing?1200:1100);existing.label=label;existing.cls=cls;
       }else driverMarkers.set(driver.id,marker(p,label,text,cls));
       points.push(p);
     }

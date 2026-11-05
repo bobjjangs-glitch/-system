@@ -14,6 +14,7 @@ import {
   Switch,
   Image,
   Keyboard,
+  TextInput,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -80,18 +81,22 @@ import {
   trackingMode,
   restoreTrackingMode,
   navigateCourse,
-  resumeCourseNotification,
 } from "./src/tracking";
 import {
   configureDriverAutomation,
   getDriverAutomation,
   recordHandledStop,
+  subscribeDriverArrival,
+  signalDriverArrival,
+  dismissDriverArrival,
+  clearPendingNavigation,
 } from "./src/driverAutomation";
 import type { DriverAutomation } from "./src/driverAutomation";
 import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
 import { hasNavigationPoint } from "./src/addressNavigation";
 import { createDriverMapData } from "./src/driverMapData";
+import DriverDeliveryHistory from "./src/DriverDeliveryHistory";
 import RegionalDispatchSummary from "./src/RegionalDispatchSummary";
 import { deliveryRegion, deliveryRegionGroups } from "./src/deliveryRegion";
 import { parseSalesReference } from "./src/salesReference";
@@ -125,6 +130,7 @@ import { prepareReceiptImage } from "./src/receiptImage";
 import ReceiptUploadProgress from "./src/ReceiptUploadProgress";
 import RouteOverview from "./src/RouteOverview";
 import AdminMapOverview, { MAP_ROUTE_COLORS } from "./src/AdminMapOverview";
+import DeliveryConfirmations from "./src/DeliveryConfirmations";
 import DeliveryItems, { CargoSummary } from "./src/DeliveryItems";
 import {
   Badge,
@@ -270,17 +276,15 @@ function AppContent() {
     const handle = (response: Notifications.NotificationResponse | null) => {
       if (!response) return;
       const { identifier, content } = response.notification.request;
+      if (handled.has(identifier)) return;
       if (
-        handled.has(identifier) ||
-        content.data?.dispatchAction !== "continue-course" ||
-        typeof content.data.routeId !== "string"
-      )
-        return;
-      handled.add(identifier);
-      resumeCourseNotification(content.data.routeId).catch((error) =>
-        setNotice(error.message),
-      );
-      Notifications.clearLastNotificationResponseAsync().catch(() => {});
+        content.data?.dispatchAction === "confirm-arrival" ||
+        content.data?.dispatchAction === "continue-course"
+      ) {
+        handled.add(identifier);
+        signalDriverArrival();
+        Notifications.clearLastNotificationResponseAsync().catch(() => {});
+      }
     };
     const listener =
       Notifications.addNotificationResponseReceivedListener(handle);
@@ -436,11 +440,78 @@ function Login({
   onLogin: (session: any) => Promise<void>;
   refreshSetup: () => Promise<SetupState>;
 }) {
+  const loginScroll = useRef<ScrollView>(null),
+    loginScrollY = useRef(0);
+  const revealLoginInput = () => {
+    if (Platform.OS === "web") return;
+    setTimeout(() => {
+      const input = TextInput.State.currentlyFocusedInput();
+      if (!input) return;
+      input.measureInWindow((_x, top, _w, h) => {
+        loginScroll.current
+          ?.getNativeScrollRef()
+          ?.measureInWindow((_sx, scrollTop, _sw, scrollHeight) => {
+            const overflow = top + h + 20 - scrollTop - scrollHeight;
+            if (overflow > 0)
+              loginScroll.current?.scrollTo({
+                y: loginScrollY.current + overflow,
+                animated: true,
+              });
+            else if (top < scrollTop)
+              loginScroll.current?.scrollTo({
+                y: Math.max(0, loginScrollY.current + top - scrollTop - 12),
+                animated: true,
+              });
+          });
+      });
+    }, 120);
+  };
+  useEffect(() => {
+    const sub = Keyboard.addListener("keyboardDidShow", revealLoginInput);
+    return () => sub.remove();
+  }, []);
+  const focusLogin = () => {
+    onInputFocus();
+    revealLoginInput();
+  };
   const [pin, setPin] = useState(""),
     [name, setName] = useState(""),
     [code, setCode] = useState("");
+  const submitLogin = () =>
+    run(async () => {
+      let session;
+      try {
+        session = await post(setup ? "/api/setup" : "/api/login", {
+          pin,
+          name,
+          bootstrapCode: code,
+        });
+      } catch (error) {
+        const state = await refreshSetup().catch(() => null);
+        if (state && state.required !== setup) {
+          setPin("");
+          setCode("");
+          throw new Error(
+            state.required
+              ? setupRequiredMessage
+              : "관리자가 이미 등록되어 있습니다. 등록한 PIN으로 로그인해 주세요.",
+          );
+        }
+        throw error;
+      }
+      Keyboard.dismiss();
+      await onLogin(session);
+      setPin("");
+    });
   return (
     <ScrollView
+      ref={loginScroll}
+      onLayout={revealLoginInput}
+      onContentSizeChange={revealLoginInput}
+      onScroll={(event) => {
+        loginScrollY.current = event.nativeEvent.contentOffset.y;
+      }}
+      scrollEventThrottle={16}
       style={{ flex: 1 }}
       contentContainerStyle={[st.login, editing && st.loginEditing]}
       keyboardShouldPersistTaps="handled"
@@ -494,8 +565,8 @@ function Login({
             </Text>
           </>
         )}
-        <Card>
-          <View style={[s.row, { marginBottom: 22 }]}>
+        <Card style={editing ? { padding: 16 } : undefined}>
+          <View style={[s.row, { marginBottom: editing ? 12 : 22 }]}>
             <ShieldCheck size={22} color={C.green} />
             <Text style={s.h2}>
               {setup ? "첫 관리자 등록" : "PIN으로 로그인"}
@@ -507,18 +578,23 @@ function Login({
               value={name}
               onChangeText={setName}
               placeholder="관리자 이름을 입력해 주세요"
-              onFocus={onInputFocus}
+              onFocus={focusLogin}
               inputStyle={{ fontSize: 16 }}
             />
           )}
           <Field
             label={setup ? "사용할 관리자 PIN (6~12자리)" : "배정받은 PIN"}
+            returnKeyType="done"
+            onSubmitEditing={() => {
+              if (!setup && !busy && pin.length >= 6) submitLogin();
+              else Keyboard.dismiss();
+            }}
             value={pin}
             onChangeText={(v) => setPin(v.replace(/\D/g, "").slice(0, 12))}
             placeholder="숫자 6~12자리"
             numeric
             secure
-            onFocus={onInputFocus}
+            onFocus={focusLogin}
             inputStyle={{ fontSize: 16 }}
           />
           {setup && bootstrap && (
@@ -527,7 +603,7 @@ function Login({
               value={code}
               onChangeText={setCode}
               secure
-              onFocus={onInputFocus}
+              onFocus={focusLogin}
               inputStyle={{ fontSize: 16 }}
             />
           )}
@@ -535,33 +611,7 @@ function Login({
             title={setup ? "관리자 등록하고 시작" : "로그인"}
             icon={ArrowRight}
             disabled={busy || pin.length < 6 || (setup && !name.trim())}
-            onPress={() =>
-              run(async () => {
-                let session;
-                try {
-                  session = await post(setup ? "/api/setup" : "/api/login", {
-                    pin,
-                    name,
-                    bootstrapCode: code,
-                  });
-                } catch (error) {
-                  const state = await refreshSetup().catch(() => null);
-                  if (state && state.required !== setup) {
-                    setPin("");
-                    setCode("");
-                    throw new Error(
-                      state.required
-                        ? setupRequiredMessage
-                        : "관리자가 이미 등록되어 있습니다. 등록한 PIN으로 로그인해 주세요.",
-                    );
-                  }
-                  throw error;
-                }
-                Keyboard.dismiss();
-                await onLogin(session);
-                setPin("");
-              })
-            }
+            onPress={submitLogin}
           />
           <Text
             style={[
@@ -2453,48 +2503,13 @@ function Admin({
               />
               <Badge text={`전체 ${data.stats.total}곳`} tone="grey" />
             </View>
-            <Text style={s.section}>배송 내역 · {date}</Text>
-            {!data.shipments.length && (
-              <Empty
-                title="이 날짜에는 배송 내역이 없어요"
-                description="이전 날짜를 선택하거나 전표를 등록해 주세요."
-              />
-            )}
-            {data.shipments.map((stop) => (
-              <Pressable key={stop.id} onPress={() => setDetail(stop)}>
-                <Card>
-                  <View style={s.between}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.h3}>{stop.recipient}</Text>
-                      <Text style={s.muted}>{stop.address}</Text>
-                      <Text style={[s.muted, { marginTop: 5, color: C.green }]}>
-                        {stop.items
-                          .map((item) => `${item.name} ${item.quantity}`)
-                          .join(" · ")}
-                      </Text>
-                    </View>
-                    <Badge
-                      text={statusName[stop.status]}
-                      tone={
-                        stop.status === "failed"
-                          ? "red"
-                          : stop.status === "delivered"
-                            ? "green"
-                            : "grey"
-                      }
-                    />
-                  </View>
-                  {stop.deliveredAt && (
-                    <Text style={[s.muted, { marginTop: 10, fontSize: 10 }]}>
-                      {new Date(stop.deliveredAt).toLocaleString("ko-KR", {
-                        timeZone: "Asia/Seoul",
-                      })}{" "}
-                      처리
-                    </Text>
-                  )}
-                </Card>
-              </Pressable>
-            ))}
+            <DriverDeliveryHistory
+              key={date}
+              shipments={data.shipments}
+              routes={data.routes}
+              drivers={data.drivers}
+              onSelect={setDetail}
+            />
             <Text style={[s.section, { marginTop: 20 }]}>
               업로드 내역 · {date}
             </Text>
@@ -3794,6 +3809,12 @@ function DriverApp({
   busy: boolean;
   tell: (s: string) => void;
 }) {
+  const driverRefreshEpoch = useRef(0);
+  const [confirmation, setConfirmation] = useState<Shipment | null>(null);
+  const [navigationPrompt, setNavigationPrompt] = useState<Route | null>(null);
+  const [completionError, setCompletionError] = useState("");
+  const completionLock = useRef(false);
+  const [completing, setCompleting] = useState(false);
   const [data, setData] = useState<DriverRouteData | null>(null),
     [mode, setMode] = useState<string>(trackingMode),
     [failed, setFailed] = useState<Shipment | null>(null),
@@ -3801,12 +3822,15 @@ function DriverApp({
     [automation, setAutomation] = useState<DriverAutomation | null>(null),
     [reason, setReason] = useState("");
   const refresh = useCallback(async () => {
+    const epoch = ++driverRefreshEpoch.current;
     const [current, settings] = await Promise.all([
       api<DriverRouteData>("/api/me"),
       getDriverAutomation(),
     ]);
-    setData(current);
-    setAutomation(settings);
+    if (epoch === driverRefreshEpoch.current) {
+      setData(current);
+      setAutomation(settings);
+    }
   }, []);
   useEffect(() => {
     restoreTrackingMode()
@@ -3844,6 +3868,45 @@ function DriverApp({
         .then(() => setMode("off"))
         .catch(() => {});
   }, [!!data, data?.route?.status, mode]);
+  useEffect(
+    () =>
+      subscribeDriverArrival(() => {
+        refresh().catch(() => {});
+      }),
+    [refresh],
+  );
+  useEffect(() => {
+    const current = data?.route;
+    if (!current || !["active", "returning"].includes(current.status)) {
+      setConfirmation(null);
+      setNavigationPrompt(null);
+      return;
+    }
+    if (automation?.routeId !== current.id) return;
+    const candidate = current.stops.find((stop) => stop.status === "assigned");
+    if (automation.pendingArrival?.stopId === candidate?.id && candidate) {
+      setConfirmation(candidate);
+    } else
+      setConfirmation((old) =>
+        old &&
+        current.stops.find((stop) => stop.id === old.id)?.status === "assigned"
+          ? old
+          : null,
+      );
+    if (
+      automation.pendingNavigation &&
+      current.stops.some(
+        (stop) =>
+          stop.id === automation.pendingNavigation!.completedStopId &&
+          ["delivered", "failed"].includes(stop.status),
+      )
+    )
+      setNavigationPrompt(current);
+  }, [
+    data?.route,
+    automation?.pendingArrival?.stopId,
+    automation?.pendingNavigation?.completedStopId,
+  ]);
   if (!data) return <Loading />;
   const route = data.route,
     company = route?.company ?? data.company,
@@ -3858,6 +3921,8 @@ function DriverApp({
   };
   const share = async () => {
     try {
+      if (route && automation?.routeId !== route.id)
+        setAutomation(await configureDriverAutomation(route.id, true));
       return await startTracking(tell);
     } finally {
       setMode(trackingMode);
@@ -3877,34 +3942,74 @@ function DriverApp({
     const sharing = actualMode === "background" ? actualMode : await share();
     if (Platform.OS !== "web" && sharing !== "background")
       throw new Error(
-        "내비를 사용하는 동안 자동 완료하려면 위치 권한을 항상 허용하고 알림 권한을 켜 주세요.",
+        "내비를 사용하는 동안 도착 확인을 받으려면 위치 권한을 항상 허용하고 알림 권한을 켜 주세요.",
       );
     await navigateCourse(current);
     setAutomation(await getDriverAutomation());
   };
-  const openNext = async (current: Route) => {
-    const upcoming = current.stops.find((s) => s.status === "assigned");
-    await navigate((upcoming as any) ?? current.company, current.company);
+  const performComplete = async (
+    stop: Shipment,
+    status = "delivered",
+    failureReason?: string,
+  ) => {
+    if (completionLock.current || !route) return;
+    completionLock.current = true;
+    Keyboard.dismiss();
+    driverRefreshEpoch.current++;
+    setCompleting(true);
+    setCompletionError("");
+    try {
+      let updated: Route;
+      try {
+        updated = await post<Route>(
+          "/api/driver/stops/" + stop.id + "/complete",
+          { status, reason: failureReason, expectedRouteId: route.id },
+        );
+      } catch (error) {
+        const fresh = await api<DriverRouteData>("/api/me").catch(() => null);
+        if (
+          fresh?.route?.id === route.id &&
+          fresh.route.stops.some(
+            (item) => item.id === stop.id && item.status === status,
+          )
+        )
+          updated = fresh.route;
+        else throw error;
+      }
+      driverRefreshEpoch.current++;
+      setData((previous) =>
+        previous ? { ...previous, route: updated } : previous,
+      );
+      setConfirmation(null);
+      setFailed(null);
+      setReason("");
+      await recordHandledStop(
+        updated.id,
+        updated.stops.find((item) => item.id === stop.id) ?? {
+          ...stop,
+          status,
+        },
+      );
+      setAutomation(await getDriverAutomation());
+      setNavigationPrompt(updated);
+    } catch (error) {
+      setCompletionError((error as Error).message);
+      throw error;
+    } finally {
+      completionLock.current = false;
+      setCompleting(false);
+    }
   };
   const complete = (
     stop: Shipment,
     status = "delivered",
     failureReason?: string,
-  ) =>
-    run(async () => {
-      const updated = await post<Route>(
-        "/api/driver/stops/" + stop.id + "/complete",
-        { status, reason: failureReason },
-      );
-      setData({ ...data, route: updated });
-      setFailed(null);
-      setReason("");
-      await recordHandledStop(updated.id, stop);
-      if (continuous) {
-        if (status === "failed" || automation?.segmentEndStopId === stop.id)
-          await navigateCourse(updated);
-      } else await openNext(updated);
-    });
+  ) => {
+    if (status === "delivered") {
+      setCompletionError("");
+      setConfirmation(stop);
+    } else run(() => performComplete(stop, status, failureReason));
+  };
   return (
     <View style={{ flex: 1 }}>
       <View style={st.top}>
@@ -4064,8 +4169,8 @@ function DriverApp({
                 </View>
                 <Text style={[s.muted, { marginBottom: 13 }]}>
                   {mode === "background"
-                    ? "길안내 앱을 사용하는 동안에도 관리자에게 위치를 공유합니다."
-                    : "백그라운드 권한과 별도 앱 빌드가 없으면 길안내 앱으로 전환할 때 위치 수신이 멈출 수 있어요."}
+                    ? "길안내·화면 잠금·최근 앱 목록에서 닫은 뒤에도 운행 중 위치를 공유합니다. 휴대폰 배터리 설정에 따라 중단될 수 있어요."
+                    : "위치 ‘항상 허용’과 알림 권한을 확인해 주세요. 현재는 앱을 보고 있는 동안에만 위치를 공유합니다."}
                 </Text>
                 <Button
                   title={
@@ -4078,6 +4183,19 @@ function DriverApp({
                   disabled={busy}
                   onPress={() => run(share)}
                 />
+                <Text style={[s.muted, { marginTop: 10 }]}>
+                  Android 설정에서 위치를 ‘항상 허용’, 정확한 위치·알림을 켜고
+                  배터리를 ‘제한 없음’으로 설정해 주세요. 강제 중지·휴대폰
+                  재부팅 후에는 앱에서 위치 공유를 다시 켜야 합니다.
+                </Text>
+                <View style={{ marginTop: 10 }}>
+                  <Button
+                    title="휴대폰 앱 설정 열기"
+                    secondary
+                    small
+                    onPress={() => run(() => Linking.openSettings())}
+                  />
+                </View>
                 <View style={{ marginTop: 14, gap: 10 }}>
                   <Button
                     title="네이버로 남은 코스 연속 안내"
@@ -4087,10 +4205,10 @@ function DriverApp({
                   />
                   <View style={s.between}>
                     <Text style={[s.h3, { flex: 1 }]}>
-                      GPS 도착 시 자동 배송 완료
+                      GPS 도착 시 배송 확인 알림
                     </Text>
                     <Switch
-                      accessibilityLabel="GPS 도착 자동 완료"
+                      accessibilityLabel="GPS 도착 확인 알림"
                       value={!!automatic}
                       disabled={busy}
                       onValueChange={(enabled) =>
@@ -4104,9 +4222,9 @@ function DriverApp({
                     />
                   </View>
                   <Text style={s.muted}>
-                    정확한 위치로 배송지 80m 이내에서 30초 이상 정차하면 현재
-                    배송지만 자동 완료합니다. 같은 장소의 다음 배송지는 확인 후
-                    수동 완료해 주세요.
+                    정확한 위치로 배송지 80m 이내에서 30초 이상 정차하면 배송
+                    완료 확인창을 표시합니다. 외부 내비나 화면 잠금 중에는 도착
+                    알림을 눌러 확인해 주세요.
                   </Text>
                   <Text style={[s.muted, { fontSize: 11 }]}>
                     네이버 내비는 경유지 5곳까지 지원합니다. 긴 코스는 다음 구간
@@ -4114,8 +4232,10 @@ function DriverApp({
                   </Text>
                   {automation?.lastCompletion && (
                     <Text style={[s.muted, { color: C.green }]}>
-                      최근 자동 완료: {automation.lastCompletion.sequence}번
-                      배송지
+                      {automation.lastCompletion.status === "failed"
+                        ? "최근 미배송 기록"
+                        : "최근 배송 완료"}
+                      : {automation.lastCompletion.sequence}번 배송지
                     </Text>
                   )}
                   <Button
@@ -4136,9 +4256,9 @@ function DriverApp({
                   </Text>
                 </View>
                 <Text style={[s.muted, { marginTop: 10, marginBottom: 20 }]}>
-                  네이버 지도에 경유지를 묶어 전달하고 도착 시 자동 완료합니다.
-                  위치를 항상 허용하고 알림 권한을 켜 주세요. 5곳 이내 코스는
-                  회사 복귀까지 한 번에 안내합니다.
+                  네이버 지도에 경유지를 묶어 전달하고 도착 시 배송 완료를
+                  확인합니다. 위치를 항상 허용하고 알림 권한을 켜 주세요. 5곳
+                  이내 코스는 회사 복귀까지 한 번에 안내합니다.
                 </Text>
                 <Button
                   title="코스 출발 · 네이버 연속 안내"
@@ -4230,9 +4350,7 @@ function DriverApp({
                     onPress={() => run(() => navigate(next as any, company))}
                   />
                   <Button
-                    title={
-                      continuous ? "직접 배송 완료" : "배송 완료 · 다음 길안내"
-                    }
+                    title={"배송 완료 확인"}
                     icon={Check}
                     disabled={busy}
                     onPress={() => complete(next)}
@@ -4332,6 +4450,58 @@ function DriverApp({
           onConfigure={requestMapSettings}
         />
       )}
+      <DeliveryConfirmations
+        stop={confirmation}
+        route={navigationPrompt}
+        busy={busy || completing}
+        error={completionError}
+        onConfirm={() =>
+          confirmation && run(() => performComplete(confirmation))
+        }
+        onDefer={() => {
+          if (completionLock.current) return;
+          const stop = confirmation;
+          setConfirmation(null);
+          setCompletionError("");
+          if (stop && route) void dismissDriverArrival(route.id, stop.id);
+        }}
+        onWait={() => {
+          if (completionLock.current) return;
+          const current = navigationPrompt;
+          setNavigationPrompt(null);
+          setCompletionError("");
+          if (current) void clearPendingNavigation(current.id);
+        }}
+        onNavigate={() =>
+          run(async () => {
+            if (!navigationPrompt) return;
+            setCompletionError("");
+            try {
+              const fresh = await api<DriverRouteData>("/api/me");
+              if (
+                !fresh.route ||
+                fresh.route.id !== navigationPrompt.id ||
+                !["active", "returning"].includes(fresh.route.status)
+              )
+                throw new Error("현재 코스를 다시 확인해 주세요.");
+              const destination =
+                fresh.route.stops.find((stop) => stop.status === "assigned") ??
+                fresh.route.company;
+              if (Platform.OS !== "web") await navigateCourse(fresh.route);
+              else
+                await navigate(destination, {
+                  ...fresh.route.company,
+                  navigation: "naver",
+                });
+              await clearPendingNavigation(fresh.route.id);
+              setNavigationPrompt(null);
+            } catch (error) {
+              setCompletionError((error as Error).message);
+              throw error;
+            }
+          })
+        }
+      />
       <Sheet
         title="미배송 사유 기록"
         visible={!!failed}
@@ -4346,7 +4516,7 @@ function DriverApp({
           multiline
         />
         <Text style={[s.muted, { marginBottom: 20 }]}>
-          관리자에게 사유가 전달되고 다음 배송지 길안내가 열려요.
+          관리자에게 사유를 저장한 뒤 다음 코스 이동 여부를 확인합니다.
         </Text>
         <Button
           title="미배송 기록 · 다음 길안내"

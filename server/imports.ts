@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
-import { Readable } from "node:stream";
+import { loadSpreadsheet, spreadsheetText } from "./spreadsheet.ts";
+import { parseSalesReference } from "../src/salesReference.ts";
 import { fork, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -9,103 +10,232 @@ import type { ShipmentInput } from "./types.ts";
 
 const aliases: Record<string, string[]> = {
   recipient: [
+    "배송지명",
     "받는분",
     "수령인",
     "수취인",
-    "거래처",
     "거래처명",
-    "배송지명",
+    "거래처",
     "고객명",
     "상호",
     "recipient",
     "name",
   ],
-  address: ["배송지", "배송주소", "주소", "도착지", "address"],
-  phone: ["전화", "전화번호", "연락처", "휴대폰", "phone"],
+  address: [
+    "배송지주소",
+    "배송주소",
+    "납품주소",
+    "도로명주소",
+    "배송지",
+    "주소",
+    "도착지",
+    "address",
+  ],
+  phone: ["배송연락처", "휴대폰", "연락처", "전화번호", "전화", "phone"],
   item: [
-    "품목",
+    "품명및규격",
     "품목명",
-    "상품",
-    "상품명",
-    "물품",
+    "품명",
     "물품명",
-    "제품",
+    "상품명",
     "제품명",
+    "품목",
+    "상품",
+    "물품",
+    "제품",
     "item",
   ],
-  quantity: ["수량", "개수", "quantity", "qty"],
-  notes: ["비고", "메모", "요청사항", "notes"],
+  specification: ["규격", "품목규격", "spec"],
+  code: ["품목코드", "상품코드", "prod_cd"],
+  customerCode: ["거래처코드", "고객코드", "cust_cd"],
+  quantity: ["수량", "판매수량", "출고수량", "개수", "quantity", "qty"],
+  notes: ["배송요청사항", "요청사항", "비고", "메모", "notes"],
+  document: ["판매번호", "일자no", "판매일자no", "전표번호", "일련번호"],
+  amount: ["합계금액", "총금액", "판매금액", "금액"],
+  net: ["공급가액", "공급금액"],
+  vat: ["부가세", "세액"],
   lat: ["위도", "lat", "latitude"],
   lng: ["경도", "lng", "longitude"],
 };
-const normal = (s: string) => s.replace(/[\s_()]/g, "").toLowerCase();
-function text(value: any): string {
-  if (value == null) return "";
-  if (typeof value === "object") {
-    if (value.result != null) return text(value.result);
-    if (value.richText) return value.richText.map((v: any) => v.text).join("");
-    return value.text ?? "";
+const normal = (s: string) =>
+  s
+    .normalize("NFKC")
+    .replace(/[\s_()[\]:：.\-/]/g, "")
+    .toLowerCase();
+function columnsFor(row: ExcelJS.Row) {
+  const cells = new Map<string, number[]>();
+  row.eachCell((cell, i) => {
+    const text = normal(spreadsheetText(cell.value));
+    cells.set(text, [...(cells.get(text) ?? []), i]);
+  });
+  const columns: Record<string, number> = {},
+    ambiguous: string[] = [];
+  for (const [key, names] of Object.entries(aliases))
+    for (const alias of names) {
+      const matches = cells.get(normal(alias));
+      if (matches?.length) {
+        if (matches.length > 1) ambiguous.push(alias);
+        columns[key] = matches[0];
+        break;
+      }
+    }
+  if (
+    columns.address &&
+    (columns.recipient || columns.item) &&
+    ambiguous.length
+  )
+    throw new Error(
+      `‘${ambiguous[0]}’ 열이 여러 개입니다. 공급자 열과 배송지 열을 구분해 주세요.`,
+    );
+  return columns;
+}
+export async function isSalesSpreadsheet(buffer: Buffer, fileName: string) {
+  const book = await loadSpreadsheet(buffer, fileName);
+  for (const sheet of book.worksheets)
+    for (let row = 1; row <= Math.min(sheet.rowCount, 30); row++) {
+      const headers: string[] = [];
+      sheet.getRow(row).eachCell((cell) => {
+        headers.push(normal(spreadsheetText(cell.value)));
+      });
+      if (
+        headers.some((v) => ["판매번호", "일자no", "판매일자no"].includes(v)) &&
+        headers.some((v) => ["거래처", "거래처명", "거래처코드"].includes(v)) &&
+        headers.includes("수량")
+      )
+        return true;
+    }
+  return false;
+}
+export async function parseSpreadsheetPreview(
+  buffer: Buffer,
+  fileName: string,
+): Promise<{ drafts: ShipmentInput[]; warnings: string[] }> {
+  const book = await loadSpreadsheet(buffer, fileName);
+  let source:
+    | {
+        sheet: ExcelJS.Worksheet;
+        header: number;
+        columns: Record<string, number>;
+      }
+    | undefined;
+  for (const sheet of book.worksheets) {
+    for (let i = 1; i <= Math.min(sheet.rowCount, 30); i++) {
+      const columns = columnsFor(sheet.getRow(i));
+      if (columns.address && (columns.recipient || columns.item)) {
+        source = { sheet, header: i, columns };
+        break;
+      }
+    }
+    if (source) break;
   }
-  return String(value).trim();
+  if (!source)
+    throw new Error(
+      "처음 30행 안에 배송주소·거래처(수령인)·품목 제목 열이 필요합니다. 공급자 주소와 배송주소를 구분해 주세요.",
+    );
+  const { sheet, header, columns } = source;
+  if (sheet.rowCount - header > 2000)
+    throw new Error("한 번에 최대 2,000행까지 업로드할 수 있습니다.");
+  const warnings = new Set<string>(),
+    grouped = new Map<string, ShipmentInput>();
+  if (header !== 1)
+    warnings.add(
+      `${sheet.name} 시트 ${header}행의 제목을 기준으로 읽었습니다.`,
+    );
+  for (let i = header + 1; i <= sheet.rowCount; i++) {
+    const row = sheet.getRow(i),
+      read = (key: string, unique = false) => {
+        if (!columns[key]) return "";
+        const cell = row.getCell(columns[key]);
+        if (unique && cell.isMerged && Number(cell.master.row) !== i) return "";
+        return spreadsheetText(cell.value);
+      };
+    const recipient = read("recipient"),
+      itemName = read("item"),
+      address = read("address"),
+      doc = read("document");
+    if (!address && !recipient && !itemName) continue;
+    if (
+      [recipient, itemName, address].some((value) =>
+        /^(총합계|합계|소계|총계)$/.test(normal(value)),
+      )
+    )
+      continue;
+    if (!address)
+      throw new Error(
+        `${i}행의 배송주소를 입력해 주세요. 공급자 주소가 아닌 배송주소 열을 확인해 주세요.`,
+      );
+    const phone = read("phone"),
+      identity = JSON.stringify([
+        parseSalesReference(doc)?.canonical ?? doc,
+        recipient,
+        address,
+        phone,
+      ]);
+    let target = grouped.get(identity);
+    if (!target) {
+      target = {
+        recipient: recipient || "",
+        address,
+        phone,
+        notes: read("notes"),
+        lat: read("lat") ? Number(read("lat")) : null,
+        lng: read("lng") ? Number(read("lng")) : null,
+        items: [],
+        ...(doc ? { salesReference: doc } : {}),
+        ...(read("customerCode") ? { customerCode: read("customerCode") } : {}),
+      };
+      grouped.set(identity, target);
+    }
+    const value = read("quantity")
+      .replace(/,/g, "")
+      .replace(/\s*(개|본|짝|ea)$/i, "");
+    const quantity = value ? Number(value) : 0;
+    if (value && (!Number.isFinite(quantity) || quantity <= 0))
+      throw new Error(`${i}행의 수량은 0보다 큰 숫자로 입력해 주세요.`);
+    if (!value)
+      warnings.add(
+        "수량이 없는 항목은 0으로 표시했습니다. 원본과 확인해 수량을 입력한 뒤 저장해 주세요.",
+      );
+    if (!recipient)
+      warnings.add("거래처가 없는 배송지는 저장 전 입력해 주세요.");
+    if (!itemName) warnings.add("품목명이 없는 항목은 저장 전 입력해 주세요.");
+    const spec = read("specification"),
+      name = itemName + (spec && !itemName.includes(spec) ? " " + spec : "");
+    target.items.push({
+      name,
+      quantity,
+      ...(read("code") ? { code: read("code") } : {}),
+    });
+    const parseMoney = (value: string) => {
+      if (!value) return null;
+      const amount = Number(value.replace(/[,₩￦원\s]/g, ""));
+      if (!Number.isFinite(amount) || amount < 0 || amount > 1e14)
+        throw new Error(`${i}행 금액을 확인해 주세요.`);
+      return amount;
+    };
+    let money = columns.amount ? parseMoney(read("amount", true)) : null;
+    if (!columns.amount && columns.net) {
+      const net = parseMoney(read("net", true)),
+        vat = parseMoney(read("vat", true));
+      if (net !== null) {
+        money = net + (vat ?? 0);
+        if (!columns.vat)
+          warnings.add(
+            "부가세 열이 없어 공급가액 기준 금액입니다. 원본과 확인해 주세요.",
+          );
+      }
+    }
+    if (money !== null)
+      target.amount = Math.round(((target.amount ?? 0) + money) * 100) / 100;
+  }
+  if (!grouped.size) throw new Error("업로드할 배송 데이터가 없습니다.");
+  return { drafts: [...grouped.values()], warnings: [...warnings] };
 }
 export async function parseSpreadsheet(
   buffer: Buffer,
   fileName: string,
 ): Promise<ShipmentInput[]> {
-  const book = new ExcelJS.Workbook();
-  if (fileName.toLowerCase().endsWith(".csv"))
-    await book.csv.read(Readable.from(buffer));
-  else await book.xlsx.load(buffer as any);
-  const sheet = book.worksheets[0];
-  if (!sheet) throw new Error("엑셀에 워크시트가 없습니다.");
-  if (sheet.rowCount > 2001)
-    throw new Error("한 번에 최대 2,000행까지 업로드할 수 있습니다.");
-  const header = sheet.getRow(1),
-    columns: Record<string, number> = {};
-  header.eachCell((cell, i) => {
-    const value = normal(text(cell.value));
-    for (const [key, names] of Object.entries(aliases))
-      if (names.some((n) => normal(n) === value)) columns[key] = i;
-  });
-  if (!columns.address)
-    throw new Error(
-      "첫 행에 ‘주소’ 또는 ‘배송주소’ 열이 필요합니다. 샘플 엑셀 형식을 확인해 주세요.",
-    );
-  const grouped = new Map<string, ShipmentInput>();
-  for (let i = 2; i <= sheet.rowCount; i++) {
-    const row = sheet.getRow(i);
-    const read = (key: string) =>
-      columns[key] ? text(row.getCell(columns[key]).value) : "";
-    const address = read("address");
-    if (!address && !read("recipient") && !read("item")) continue;
-    if (!address) throw new Error(`${i}행의 배송주소를 입력해 주세요.`);
-    const recipient = read("recipient") || "수령인 확인 필요",
-      phone = read("phone"),
-      key = JSON.stringify([recipient, address, phone]);
-    let target = grouped.get(key);
-    if (!target) {
-      const lat = read("lat"),
-        lng = read("lng");
-      target = {
-        recipient,
-        address,
-        phone,
-        notes: read("notes"),
-        lat: lat ? Number(lat) : null,
-        lng: lng ? Number(lng) : null,
-        items: [],
-      };
-      grouped.set(key, target);
-    }
-    const quantity = read("quantity")
-      ? Number(read("quantity").replaceAll(",", ""))
-      : 1;
-    if (!Number.isFinite(quantity) || quantity <= 0)
-      throw new Error(`${i}행의 수량은 0보다 큰 숫자로 입력해 주세요.`);
-    target.items.push({ name: read("item") || "물품 확인 필요", quantity });
-  }
-  if (!grouped.size) throw new Error("업로드할 배송 데이터가 없습니다.");
-  return [...grouped.values()];
+  return (await parseSpreadsheetPreview(buffer, fileName)).drafts;
 }
 export { parseReceipt } from "../src/receiptText.ts";
 

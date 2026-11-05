@@ -89,6 +89,22 @@ public class LocationTaskServiceTest {
     assertNotEquals("running", LocationTaskService.Companion.getStatus(TASK));
   }
 
+  @Test public void closingRecentTaskKeepsAnOptedInLocationServiceRunning() {
+    LocationTaskService service = Robolectric.buildService(LocationTaskService.class).create().get();
+    service.onStartCommand(startIntent().putExtra("killService", false), 0, 1);
+    service.onTaskRemoved(new Intent());
+    assertEquals("running", LocationTaskService.Companion.getStatus(TASK));
+    service.stop();
+    assertEquals("stopped", LocationTaskService.Companion.getStatus(TASK));
+  }
+
+  @Test public void explicitlyRequestedTaskRemovalStillStopsTheService() {
+    LocationTaskService service = Robolectric.buildService(LocationTaskService.class).create().get();
+    service.onStartCommand(startIntent().putExtra("killService", true), 0, 1);
+    service.onTaskRemoved(new Intent());
+    assertEquals("stopped", LocationTaskService.Companion.getStatus(TASK));
+  }
+
   private static class BindingContext extends ContextWrapper {
     ServiceConnection connection;
     int unbinds, stops;

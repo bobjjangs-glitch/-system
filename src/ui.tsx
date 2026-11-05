@@ -89,6 +89,8 @@ export function Field({
   autoCorrect,
   onFocus,
   inputStyle,
+  onSubmitEditing,
+  returnKeyType,
 }: {
   label: string;
   value: string;
@@ -101,6 +103,8 @@ export function Field({
   autoCorrect?: boolean;
   onFocus?: TextInputProps["onFocus"];
   inputStyle?: TextInputProps["style"];
+  onSubmitEditing?: TextInputProps["onSubmitEditing"];
+  returnKeyType?: TextInputProps["returnKeyType"];
 }) {
   return (
     <View style={{ gap: 7, marginBottom: 13 }}>
@@ -117,6 +121,8 @@ export function Field({
         autoCapitalize={autoCapitalize}
         autoCorrect={autoCorrect}
         onFocus={onFocus}
+        onSubmitEditing={onSubmitEditing}
+        returnKeyType={returnKeyType}
         style={[
           s.input,
           multiline && { minHeight: 76, textAlignVertical: "top" },

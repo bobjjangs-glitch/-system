@@ -47,7 +47,19 @@ export async function restoreTrackingMode() {
       if (await Location.hasStartedLocationUpdatesAsync(TASK)) {
         const probe = androidService();
         if (probe && (await probe()) !== "running") await stopTracking(false);
-        else trackingMode = "background";
+        else {
+          const options = (await TaskManager.getTaskOptionsAsync(TASK).catch(
+            () => null,
+          )) as {
+            foregroundService?: { killServiceOnDestroy?: boolean };
+          } | null;
+          if (
+            options?.foregroundService?.killServiceOnDestroy === true &&
+            AppState.currentState === "active"
+          )
+            return await startTracking(() => {});
+          trackingMode = "background";
+        }
       } else if (!foreground) trackingMode = "off";
     } catch {
       if (!foreground) trackingMode = "off";
@@ -61,7 +73,9 @@ if (Platform.OS !== "web" && !TaskManager.isTaskDefined(LEGACY_TASK))
 if (Platform.OS !== "web" && !TaskManager.isTaskDefined(TASK))
   TaskManager.defineTask(TASK, async ({ data, error }) => {
     if (error) {
-      await stopTracking();
+      // A temporary provider failure must not permanently disable the route.
+      if (/permission|unauthori[sz]ed|denied/i.test(String(error.code)))
+        await stopTracking(false);
       return;
     }
     const locations = (
@@ -70,8 +84,13 @@ if (Platform.OS !== "web" && !TaskManager.isTaskDefined(TASK))
     const location = Array.isArray(locations) ? locations.at(-1) : null;
     if (!location) return;
     try {
+      const expectedGeneration = trackingGeneration;
       const point = locationPayload(location);
-      if (point && (await handleDriverLocation(point, true)).stop)
+      if (
+        point &&
+        (await handleDriverLocation(point, true)).stop &&
+        expectedGeneration === trackingGeneration
+      )
         await stopTracking();
     } catch {
       /* A later location update retries after connectivity resumes. */
@@ -201,7 +220,7 @@ async function startTrackingInternal(
             notificationTitle: "바른배차 · 배송 중",
             notificationBody: "관리자에게 배송 위치를 공유하고 있습니다.",
             notificationColor: "#153b36",
-            killServiceOnDestroy: true,
+            killServiceOnDestroy: false,
           },
         });
         const probe = androidService();

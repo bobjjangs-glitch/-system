@@ -2,7 +2,7 @@
   "expo": {
     "name": "바른배차",
     "slug": "bareun-dispatch",
-    "version": "1.5.1",
+    "version": "1.6.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "scheme": "bareundispatch",
@@ -10,18 +10,13 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.bobjjang.bareundispatch",
       "infoPlist": {
-        "UIBackgroundModes": [
-          "location"
-        ],
-        "LSApplicationQueriesSchemes": [
-          "kakaomap",
-          "nmap"
-        ]
+        "UIBackgroundModes": ["location"],
+        "LSApplicationQueriesSchemes": ["kakaomap", "nmap"]
       }
     },
     "android": {
       "package": "com.bobjjang.bareundispatch",
-      "versionCode": 15,
+      "versionCode": 16,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",

@@ -1,8 +1,12 @@
 import { createNaverMapDocument } from "./naverMapDocument.ts";
 
 // Naver uses the hosted document so SDK authentication sees the registered HTTPS origin.
-export function createMapDocument(apiUrl = "", options?: { provider?: string; naverKeyId?: string }) {
-  if (options?.provider === "naver") return createNaverMapDocument(options.naverKeyId);
+export function createMapDocument(
+  apiUrl = "",
+  options?: { provider?: string; naverKeyId?: string },
+) {
+  if (options?.provider === "naver")
+    return createNaverMapDocument(options.naverKeyId);
   const assets = (apiUrl.replace(/\/$/, "") + "/leaflet/").replace(
     /[&"<>]/g,
     (c) => ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[c]!,
@@ -26,7 +30,13 @@ export function createMapDocument(apiUrl = "", options?: { provider?: string; na
     .leaflet-popup-content{font-size:13px}
     .fit-route{border:0;background:white;padding:11px 14px;font:700 13px system-ui;color:#142d35;cursor:pointer;border-radius:4px;min-height:44px}
     #map-error{display:none;position:absolute;inset:30% 15%;text-align:center;font-size:14px;color:#52645d}
-  </style>
+
+.driver-pin{width:104px;height:74px;display:flex;align-items:center;flex-direction:column;filter:drop-shadow(0 3px 4px #0005);background:transparent;border:0;line-height:normal;box-sizing:border-box}
+.driver-dot{width:46px;height:46px;border:4px solid white;border-radius:50%;background:#145c4c;display:flex;align-items:center;justify-content:center;color:white;box-sizing:border-box;position:relative}
+.driver-pin.driver-idle .driver-dot{background:#758179}.driver-name{margin-top:3px;background:#173e35;color:white;border:2px solid white;border-radius:8px;padding:3px 8px;font-size:12px;font-weight:800;white-space:nowrap;max-width:104px;overflow:hidden;text-overflow:ellipsis}
+.driver-pin.driver-idle .driver-name{background:#66736c}.driver-pin.driver .driver-dot:before{content:'';position:absolute;inset:-8px;border:3px solid #43b88a77;border-radius:50%;animation:driver-pulse 2s infinite}
+@keyframes driver-pulse{50%{transform:scale(1.18);opacity:.3}}@media(prefers-reduced-motion:reduce){.driver-dot:before{animation:none!important}}
+</style>
 </head>
 <body>
   <div id="map"></div>
@@ -66,6 +76,7 @@ export function createMapDocument(apiUrl = "", options?: { provider?: string; na
     };
     fitControl.addTo(map);
     function icon(label,cls) {
+      if(cls==='driver'||cls==='driver-idle')return L.divIcon({className:'driver-pin '+cls,html:'<span class="driver-dot"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M3 4h11v12H3zM14 9h4l3 4v3h-7"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></svg></span><span class="driver-name">'+String(label).replace(/[<>&"']/g,'')+'</span>',iconSize:[104,74],iconAnchor:[52,23]});
       return L.divIcon({
         className:'number '+(cls||''),html:String(label).replace(/[<>&]/g,''),
         iconSize:[30,30],iconAnchor:[15,15]
@@ -76,7 +87,7 @@ export function createMapDocument(apiUrl = "", options?: { provider?: string; na
     }
     function marker(p,label,text,cls,group=layer) {
       if (!valid(p)) return;
-      return L.marker([p.lat,p.lng],{icon:icon(label,cls)}).bindPopup(popup(text)).addTo(group);
+      return L.marker([p.lat,p.lng],{icon:icon(label,cls),zIndexOffset:cls==='driver'?1200:cls==='driver-idle'?1100:0}).bindPopup(popup(text)).addTo(group);
     }
     window.updateDispatchMap=function (data) {
       layer.clearLayers();
@@ -115,7 +126,7 @@ export function createMapDocument(apiUrl = "", options?: { provider?: string; na
           const age=Date.now()-Date.parse(p.recordedAt);
           const sharing=age>=0 && age<120000 && routes.some(r=>
             r.id===p.routeId && (r.status==='active'||r.status==='returning'));
-          const label=driver.name.slice(-2),cls=sharing ? 'driver' : 'driver-idle';
+          const label=driver.name.slice(0,12),cls=sharing ? 'driver' : 'driver-idle';
           const text=driver.name+(sharing ? ' · 위치 수신 중' : ' · 마지막 수신 위치');
           visibleDrivers.add(driver.id);
           const existing=driverMarkers.get(driver.id);

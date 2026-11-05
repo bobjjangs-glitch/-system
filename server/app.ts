@@ -27,7 +27,7 @@ import {
 } from "./routing.ts";
 import { trafficRoutingStatus } from "./naverDirections.ts";
 import {
-  parseSpreadsheet,
+  parseSpreadsheet, parseSpreadsheetPreview, isSalesSpreadsheet,
   recognizeReceipt,
   shutdownReceiptOcrPool,
   validateShipments,
@@ -859,6 +859,8 @@ export function createDispatchApp(
     );
     let rawText = "",
       drafts;
+    let spreadsheetWarnings:string[]=[];
+    let importSource:string|undefined;
     let deviceKey: string | undefined;
     let deviceDigest: string | undefined;
     const deviceRecognition =
@@ -877,7 +879,10 @@ export function createDispatchApp(
         "기기 인식 결과는 전표 사진과 함께 보내 주세요.",
         422,
       );
-      drafts = await parseSpreadsheet(file.buffer, file.originalname);
+      if(await isSalesSpreadsheet(file.buffer,file.originalname)){
+        const result=await parseSalesExport(store,file.buffer,file.originalname,{salesDate:date});drafts=result.drafts;spreadsheetWarnings=["판매조회 형식을 감지해 선택한 배송일의 전표를 읽었습니다.",...result.warnings];importSource="ecount-excel";
+      }else{const result=await parseSpreadsheetPreview(file.buffer,file.originalname);drafts=result.drafts;spreadsheetWarnings=result.warnings;}
+
     } else if (deviceRecognition) {
       const recognizedText = typeof req.body.recognizedText === "string"
         ? req.body.recognizedText.replace(/\r\n?/g, "\n")
@@ -975,9 +980,9 @@ export function createDispatchApp(
         flag: "wx",
       });
       store.run(
-        "INSERT INTO imports(id,fileName,storedName,mime,rawText,drafts,serviceDate,createdAt) VALUES(?,?,?,?,?,?,?,?)",
+        "INSERT INTO imports(id,fileName,storedName,mime,rawText,drafts,serviceDate,createdAt,meta) VALUES(?,?,?,?,?,?,?,?,?)",
         importId, fileName, storedName, file.mimetype, rawText,
-        JSON.stringify(drafts), date, new Date().toISOString(),
+        JSON.stringify(drafts), date, new Date().toISOString(), JSON.stringify({source:importSource,warnings:spreadsheetWarnings}),
       );
       if (deviceKey)
         store.run(
@@ -992,7 +997,7 @@ export function createDispatchApp(
         rawText,
         drafts,
         serviceDate: date,
-        status: "review",
+        status: "review", recognitionWarnings: spreadsheetWarnings,
       };
     });
     if (created) notify("changed");
@@ -1779,6 +1784,7 @@ export function createDispatchApp(
       req.user.userId,
     );
     assert(route, "배정된 배송지만 처리할 수 있습니다.", 403);
+    assert(req.body.expectedRouteId===undefined||req.body.expectedRouteId===route.id,"배정 코스가 변경되었습니다. 새로고침 후 확인해 주세요.",409);
     assert(
       route.status === "active" && shipment.status === "assigned",
       "진행 중인 미완료 배송지만 처리할 수 있습니다.",
