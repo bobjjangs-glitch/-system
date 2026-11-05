@@ -1,5 +1,5 @@
 export type Point = { lat: number; lng: number };
-export type Item = { name: string; quantity: number };
+export type Item = { name: string; quantity: number; code?: string };
 export type ShipmentInput = {
   recipient: string;
   address: string;
@@ -8,6 +8,10 @@ export type ShipmentInput = {
   notes?: string;
   lat?: number | null;
   lng?: number | null;
+  amount?: number | null;
+  customerCode?: string;
+  salesReference?: string;
+  erpSourceKey?: string;
 };
 export type Shipment = ShipmentInput & {
   id: string;

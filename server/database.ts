@@ -91,6 +91,34 @@ export class Store {
     this.db
       .prepare("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)")
       .run("company", JSON.stringify(defaultCompany));
+    this.db
+      .exec(`CREATE TABLE IF NOT EXISTS catalog_customers(id TEXT PRIMARY KEY,code TEXT NOT NULL,name TEXT NOT NULL,address TEXT NOT NULL,phone TEXT NOT NULL,source TEXT NOT NULL,updatedAt TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS catalog_products(id TEXT PRIMARY KEY,code TEXT NOT NULL,name TEXT NOT NULL,specification TEXT NOT NULL,unitPrice REAL,source TEXT NOT NULL,updatedAt TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS customer_code ON catalog_customers(code);
+      CREATE INDEX IF NOT EXISTS product_code ON catalog_products(code);
+      CREATE TABLE IF NOT EXISTS erp_sales_links(sourceKey TEXT PRIMARY KEY,importId TEXT NOT NULL REFERENCES imports(id) ON DELETE CASCADE);`);
+    for (const [column, type] of [
+      ["amount", "REAL"],
+      ["customerCode", "TEXT"],
+      ["salesReference", "TEXT"],
+      ["erpSourceKey", "TEXT"],
+    ])
+      if (
+        !this.db
+          .prepare("PRAGMA table_info(shipments)")
+          .all()
+          .some((field) => field.name === column)
+      )
+        this.db.exec(`ALTER TABLE shipments ADD COLUMN ${column} ${type}`);
+    if (
+      !this.db
+        .prepare("PRAGMA table_info(imports)")
+        .all()
+        .some((field) => field.name === "meta")
+    )
+      this.db.exec(
+        "ALTER TABLE imports ADD COLUMN meta TEXT NOT NULL DEFAULT '{}' ",
+      );
     this.applyCompanyPreset();
   }
   one<T = any>(sql: string, ...args: any[]): T | undefined {
@@ -326,7 +354,10 @@ export class Store {
     return {
       ...row,
       driverName: driver?.name ?? "기사",
-      manualAssigned: !!this.one("SELECT key FROM settings WHERE key=?", "manual-route:" + row.id),
+      manualAssigned: !!this.one(
+        "SELECT key FROM settings WHERE key=?",
+        "manual-route:" + row.id,
+      ),
       company: JSON.parse(row.company),
       geometry: JSON.parse(row.geometry),
       planning: row.planning ? JSON.parse(row.planning) : null,

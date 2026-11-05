@@ -24,10 +24,8 @@ import * as DocumentPicker from "expo-document-picker";
 import * as Sharing from "expo-sharing";
 import { File, Paths } from "expo-file-system";
 import {
-  ArrowDown,
   ArrowLeft,
   ArrowRight,
-  ArrowUp,
   Building2,
   Camera,
   Check,
@@ -94,6 +92,10 @@ import { consumeLocationRecovery, shareNativeCrash } from "./src/diagnostics";
 import MapPanel from "./src/MapPanel";
 import { hasNavigationPoint } from "./src/addressNavigation";
 import { createDriverMapData } from "./src/driverMapData";
+import CatalogPicker from "./src/CatalogPicker";
+import ErpImportPanel from "./src/ErpImportPanel";
+import DispatchBoardScreen from "./src/DispatchBoardScreen";
+import type { BoardDrop } from "./src/dispatchBoardTypes";
 import KeyboardViewport from "./src/KeyboardViewport";
 import {
   TrafficPlannerControls,
@@ -155,6 +157,7 @@ type DriverRouteData = {
   mapSettings?: MapSettings;
 };
 type Dashboard = {
+  dispatchRevision?: string;
   date: string;
   company: Company;
   mapSettings?: MapSettings;
@@ -635,6 +638,15 @@ function Admin({
     [detail, setDetail] = useState<Shipment | null>(null),
     [assignment, setAssignment] = useState<Shipment | null>(null),
     [confirmClear, setConfirmClear] = useState(false);
+  const [boardOpen, setBoardOpen] = useState(false);
+  const [boardSaving, setBoardSaving] = useState(false);
+  const [boardMessage, setBoardMessage] = useState("");
+  const boardSavingRef = useRef(false);
+  const [catalogTarget, setCatalogTarget] = useState<{
+    kind: "customers" | "products";
+    row: number;
+    item?: number;
+  } | null>(null);
   const [assignmentError, setAssignmentError] = useState("");
   const [assignmentSaving, setAssignmentSaving] = useState(false);
   const assignmentRef = useRef<Shipment | null>(null);
@@ -775,6 +787,26 @@ function Admin({
       }),
     [refresh],
   );
+  const dropOnBoard = async (drop: BoardDrop) => {
+    if (boardSavingRef.current) return;
+    boardSavingRef.current = true;
+    setBoardSaving(true);
+    setBoardMessage("");
+    try {
+      await post("/api/dispatch/drop", drop);
+      await refresh();
+      if (mounted.current)
+        setBoardMessage(
+          "이동을 저장했습니다. 회사 왕복 경로와 예상 시간을 갱신했어요.",
+        );
+    } catch (error) {
+      if (mounted.current) setBoardMessage((error as Error).message);
+      await refresh().catch(() => {});
+    } finally {
+      boardSavingRef.current = false;
+      if (mounted.current) setBoardSaving(false);
+    }
+  };
   const addDemo = () =>
     run(async () => {
       const result = await post("/api/demo");
@@ -1178,6 +1210,14 @@ function Admin({
     Keyboard.dismiss();
     setReviewError("");
     try {
+      if (
+        batch.drafts.some(
+          (row) =>
+            row.amount != null &&
+            (!Number.isFinite(row.amount) || row.amount < 0),
+        )
+      )
+        throw new Error("전표 금액을 숫자로 확인해 주세요.");
       if (batch.deviceLocalId) {
         let local = deviceDraftsRef.current.find(
           (draft) => draft.localId === batch.deviceLocalId,
@@ -1848,6 +1888,17 @@ function Admin({
               거래명세서 제목 아래의 거래처·주소·연락처와 품목표가 함께 보이게
               촬영해 주세요.
             </Text>
+            <ErpImportPanel
+              date={date}
+              disabled={busy || !!uploadProgress || !!review}
+              onReview={(batch) => {
+                if (!reviewRef.current && !uploadRef.current) {
+                  reviewRef.current = batch;
+                  setReview(batch);
+                  refresh().catch(() => {});
+                }
+              }}
+            />
             {deviceDrafts.length > 0 && (
               <>
                 <Text style={[s.section, { marginTop: 12 }]}>
@@ -2006,6 +2057,23 @@ function Admin({
                   회사 복귀
                 </Text>
               </View>
+              <View style={{ marginBottom: 16 }}>
+                <Button
+                  title="터치로 배차하기"
+                  icon={Truck}
+                  disabled={busy || !!uploadProgress}
+                  onPress={() => {
+                    if (!data.dispatchRevision) {
+                      tell(
+                        "서버를 최신 버전으로 배포한 뒤 터치 배차를 이용해 주세요.",
+                      );
+                      return;
+                    }
+                    setBoardMessage("");
+                    setBoardOpen(true);
+                  }}
+                />
+              </View>
               <TrafficPlannerControls
                 busy={busy || !!uploadProgress}
                 active={!!data.stats.active}
@@ -2026,8 +2094,8 @@ function Admin({
                 }
               />
               <Text style={[s.muted, { marginTop: 12 }]}>
-                주소만 등록하면 배차할 때 위치를 자동 확인해요. 미배차 배송지를
-                눌러 기사에게 바로 배정할 수도 있어요.
+                배송지의 ≡를 길게 눌러 기사 사이로 옮기거나 위아래로 순서를 바꿔
+                보세요. 주소 위치와 회사 왕복 시간을 자동 확인해요.
               </Text>
               {data.shipments.some(
                 (shipment) =>
@@ -2208,60 +2276,6 @@ function Admin({
                         </Text>
                       </View>
                     </Pressable>
-                    {route.status === "planned" && (
-                      <View style={{ gap: 5 }}>
-                        <Pressable
-                          accessibilityLabel={`${stop.recipient} 순서 올리기`}
-                          disabled={index === 0 || busy}
-                          onPress={() =>
-                            run(async () => {
-                              const ids = route.stops.map((s) => s.id);
-                              [ids[index - 1], ids[index]] = [
-                                ids[index],
-                                ids[index - 1],
-                              ];
-                              await post(
-                                "/api/routes/" + route.id + "/reorder",
-                                { stopIds: ids },
-                              );
-                              await refresh();
-                            })
-                          }
-                          style={[
-                            st.orderButton,
-                            index === 0 && { opacity: 0.25 },
-                          ]}
-                        >
-                          <ArrowUp size={14} color={C.green} />
-                        </Pressable>
-                        <Pressable
-                          accessibilityLabel={`${stop.recipient} 순서 내리기`}
-                          disabled={index === route.stops.length - 1 || busy}
-                          onPress={() =>
-                            run(async () => {
-                              const ids = route.stops.map((s) => s.id);
-                              [ids[index], ids[index + 1]] = [
-                                ids[index + 1],
-                                ids[index],
-                              ];
-                              await post(
-                                "/api/routes/" + route.id + "/reorder",
-                                { stopIds: ids },
-                              );
-                              await refresh();
-                            })
-                          }
-                          style={[
-                            st.orderButton,
-                            index === route.stops.length - 1 && {
-                              opacity: 0.25,
-                            },
-                          ]}
-                        >
-                          <ArrowDown size={14} color={C.green} />
-                        </Pressable>
-                      </View>
-                    )}
                   </View>
                 ))}
                 <TimelineCompany name={route.company.name} label="복귀" />
@@ -2676,11 +2690,27 @@ function Admin({
                     </Pressable>
                   )}
                 </View>
+                {!!row.salesReference && (
+                  <Text style={[s.muted, { marginBottom: 12 }]}>
+                    판매전표 {row.salesReference}
+                  </Text>
+                )}
+                <View style={{ marginBottom: 12 }}>
+                  <Button
+                    title="거래처 검색"
+                    secondary
+                    small
+                    disabled={busy}
+                    onPress={() =>
+                      setCatalogTarget({ kind: "customers", row: index })
+                    }
+                  />
+                </View>
                 <Field
                   label="수령인 / 거래처"
                   value={row.recipient}
                   onChangeText={(recipient) =>
-                    updateReview(index, { recipient })
+                    updateReview(index, { recipient, customerCode: undefined })
                   }
                 />
                 <Field
@@ -2699,6 +2729,19 @@ function Admin({
                 {row.items.map((item, i) => (
                   <View key={i} style={[s.row, { alignItems: "flex-start" }]}>
                     <View style={{ flex: 1 }}>
+                      <Button
+                        title="품목 검색"
+                        secondary
+                        small
+                        disabled={busy}
+                        onPress={() =>
+                          setCatalogTarget({
+                            kind: "products",
+                            row: index,
+                            item: i,
+                          })
+                        }
+                      />
                       <Field
                         label={`물품 ${i + 1}`}
                         value={item.name}
@@ -2706,7 +2749,7 @@ function Admin({
                         onChangeText={(name) =>
                           updateReview(index, {
                             items: row.items.map((v, j) =>
-                              j === i ? { ...v, name } : v,
+                              j === i ? { ...v, name, code: undefined } : v,
                             ),
                           })
                         }
@@ -2755,6 +2798,19 @@ function Admin({
                   }
                 />
                 <View style={s.divider} />
+                <Field
+                  label="전표 금액 (원 · 선택)"
+                  numeric
+                  value={row.amount == null ? "" : String(row.amount)}
+                  onChangeText={(value) =>
+                    updateReview(index, {
+                      amount:
+                        value.trim() === ""
+                          ? null
+                          : Number(value.replace(/,/g, "")),
+                    })
+                  }
+                />
                 <Field
                   label="요청사항"
                   value={row.notes ?? ""}
@@ -2829,21 +2885,22 @@ function Admin({
                   />
                 </View>
               )}
-            {review.status !== "edit" && (
-              <View style={{ marginTop: 10 }}>
-                <Button
-                  title="배송지 더 추가"
-                  secondary
-                  icon={Plus}
-                  onPress={() =>
-                    setReview({
-                      ...review,
-                      drafts: [...review.drafts, blankShipment()],
-                    })
-                  }
-                />
-              </View>
-            )}
+            {review.status !== "edit" &&
+              !review.drafts.some((row) => row.erpSourceKey) && (
+                <View style={{ marginTop: 10 }}>
+                  <Button
+                    title="배송지 더 추가"
+                    secondary
+                    icon={Plus}
+                    onPress={() =>
+                      setReview({
+                        ...review,
+                        drafts: [...review.drafts, blankShipment()],
+                      })
+                    }
+                  />
+                </View>
+              )}
             {review.status !== "edit" &&
               (review.id || review.deviceLocalId) && (
                 <View style={{ marginTop: 18 }}>
@@ -2860,6 +2917,61 @@ function Admin({
           </>
         )}
       </Sheet>
+      <CatalogPicker
+        kind={catalogTarget?.kind ?? null}
+        onClose={() => setCatalogTarget(null)}
+        onSelect={(entry) => {
+          if (!catalogTarget || !reviewRef.current) return;
+          const row = reviewRef.current.drafts[catalogTarget.row];
+          if (!row) return;
+          if (catalogTarget.kind === "customers")
+            updateReview(catalogTarget.row, {
+              recipient: entry.name,
+              address: entry.address ?? "",
+              phone: entry.phone ?? "",
+              customerCode: entry.code,
+              lat: null,
+              lng: null,
+            });
+          else
+            updateReview(catalogTarget.row, {
+              items: row.items.map((item, i) =>
+                i === catalogTarget.item
+                  ? {
+                      ...item,
+                      name:
+                        entry.name +
+                        (entry.specification &&
+                        !entry.name.includes(entry.specification)
+                          ? " " + entry.specification
+                          : ""),
+                      code: entry.code,
+                    }
+                  : item,
+              ),
+            });
+          Keyboard.dismiss();
+          setCatalogTarget(null);
+        }}
+      />
+      {boardOpen && (
+        <DispatchBoardScreen
+          visible
+          data={{
+            drivers: data.drivers,
+            routes: data.routes,
+            shipments: data.shipments,
+            serviceDate: date,
+            revision: data.dispatchRevision ?? "",
+            busy: boardSaving,
+            message: boardMessage,
+          }}
+          onDrop={dropOnBoard}
+          onClose={() => {
+            if (!boardSavingRef.current) setBoardOpen(false);
+          }}
+        />
+      )}
       <AdminMapOverview
         visible={mapOverview}
         data={adminMapData}
@@ -3283,6 +3395,14 @@ function Admin({
             )}
             <View style={s.divider} />
             <Text style={[s.h3, { marginBottom: 15 }]}>배송 물품</Text>
+            {detail.amount != null && (
+              <Text style={[s.h3, { marginVertical: 12 }]}>
+                전표 금액 {detail.amount.toLocaleString()}원
+              </Text>
+            )}
+            {!!detail.salesReference && (
+              <Text style={s.muted}>판매전표 {detail.salesReference}</Text>
+            )}
             {detail.items.map((item, i) => (
               <View key={i} style={[s.between, { paddingVertical: 8 }]}>
                 <Text style={{ color: C.ink }}>{item.name}</Text>

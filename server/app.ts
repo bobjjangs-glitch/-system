@@ -8,12 +8,23 @@ import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve, join, basename, extname } from "node:path";
-import { randomInt, createHash, createHmac, timingSafeEqual } from "node:crypto";
+import {
+  randomInt,
+  createHash,
+  createHmac,
+  timingSafeEqual,
+} from "node:crypto";
 import ExcelJS from "exceljs";
 import { Store, id, today } from "./database.ts";
 import type { Session, Shipment, Company, Route } from "./types.ts";
 import { isPoint } from "./types.ts";
-import { planDispatch, estimateRoute, orderStops, routePlanning, resolveDeparture } from "./routing.ts";
+import {
+  planDispatch,
+  estimateRoute,
+  orderStops,
+  routePlanning,
+  resolveDeparture,
+} from "./routing.ts";
 import { trafficRoutingStatus } from "./naverDirections.ts";
 import {
   parseSpreadsheet,
@@ -23,7 +34,17 @@ import {
   validateReceiptImage,
 } from "./imports.ts";
 import { geocode, GeocodingError } from "./geocoding.ts";
-import { assignPendingShipment, removePlannedShipment, PlannedShipmentMutationError } from "./manualAssignment.ts";
+import {
+  assignPendingShipment,
+  removePlannedShipment,
+  PlannedShipmentMutationError,
+} from "./manualAssignment.ts";
+import { dispatchRevision, dropShipment } from "./dragDispatch.ts";
+import {
+  importCatalog,
+  searchCatalog,
+  parseSalesExport,
+} from "./erpCatalog.ts";
 import { seedDemo } from "./demo.ts";
 import { createMapDocument } from "../src/mapDocument.ts";
 import { extractReceipt } from "../src/receiptText.ts";
@@ -62,7 +83,12 @@ function pinValue(value: unknown): string {
 }
 
 export function createDispatchApp(
-  options: { dataDir?: string; roadRouting?: boolean; test?: boolean; autoGeocode?: boolean } = {},
+  options: {
+    dataDir?: string;
+    roadRouting?: boolean;
+    test?: boolean;
+    autoGeocode?: boolean;
+  } = {},
 ) {
   const dataDir = resolve(
     options.dataDir ?? process.env.APP_DATA_DIR ?? ".local",
@@ -86,8 +112,21 @@ export function createDispatchApp(
       )
         ws.send(JSON.stringify({ event, ...payload }));
   };
-  const locateSavedAddresses = async (date: string, ids?: string[], allowRouting = false, maximum = 25) => {
-    const candidates = store.shipments(date).filter((row) => row.status === "pending" && !row.routeId && !hasLocation(row) && (!ids || ids.includes(row.id)));
+  const locateSavedAddresses = async (
+    date: string,
+    ids?: string[],
+    allowRouting = false,
+    maximum = 25,
+  ) => {
+    const candidates = store
+      .shipments(date)
+      .filter(
+        (row) =>
+          row.status === "pending" &&
+          !row.routeId &&
+          !hasLocation(row) &&
+          (!ids || ids.includes(row.id)),
+      );
     const unresolved: { id: string; address: string; message: string }[] = [];
     const deadline = Date.now() + 25000;
     let resolved = 0;
@@ -97,15 +136,45 @@ export function createDispatchApp(
         const point = await geocode(store, row.address);
         if (closing || (routingBusy && !allowRouting)) break;
         const current = store.one("SELECT * FROM shipments WHERE id=?", row.id);
-        if (current?.address !== row.address || current.status !== "pending" || current.routeId || hasLocation(current)) continue;
-        store.run("UPDATE shipments SET lat=?,lng=? WHERE id=? AND address=? AND status='pending' AND routeId IS NULL", point.lat, point.lng, row.id, row.address);
+        if (
+          current?.address !== row.address ||
+          current.status !== "pending" ||
+          current.routeId ||
+          hasLocation(current)
+        )
+          continue;
+        store.run(
+          "UPDATE shipments SET lat=?,lng=? WHERE id=? AND address=? AND status='pending' AND routeId IS NULL",
+          point.lat,
+          point.lng,
+          row.id,
+          row.address,
+        );
         resolved++;
       } catch (error) {
-        unresolved.push({ id: row.id, address: row.address, message: error instanceof GeocodingError ? error.message : "배송주소를 확인하지 못했습니다. 주소를 확인한 뒤 다시 시도해 주세요." });
-        if (error instanceof GeocodingError && error.code !== "NOT_FOUND") break;
+        unresolved.push({
+          id: row.id,
+          address: row.address,
+          message:
+            error instanceof GeocodingError
+              ? error.message
+              : "배송주소를 확인하지 못했습니다. 주소를 확인한 뒤 다시 시도해 주세요.",
+        });
+        if (error instanceof GeocodingError && error.code !== "NOT_FOUND")
+          break;
       }
     }
-    const remaining = closing ? 0 : store.shipments(date).filter((row) => row.status === "pending" && !row.routeId && !hasLocation(row) && (!ids || ids.includes(row.id))).length;
+    const remaining = closing
+      ? 0
+      : store
+          .shipments(date)
+          .filter(
+            (row) =>
+              row.status === "pending" &&
+              !row.routeId &&
+              !hasLocation(row) &&
+              (!ids || ids.includes(row.id)),
+          ).length;
     if (resolved && !closing) notify("changed");
     return { resolved, unresolved, remaining };
   };
@@ -273,6 +342,16 @@ export function createDispatchApp(
       if (user.userId === req.user.userId) ws.close(1008);
     res.json({ ok: true });
   });
+  const driverRoute = (route: Route | null) =>
+    route
+      ? {
+          ...route,
+          stops: route.stops.map(
+            ({ amount, customerCode, salesReference, erpSourceKey, ...stop }) =>
+              stop,
+          ),
+        }
+      : null;
   app.get("/api/me", (request, res) => {
     const req = request as AuthRequest;
     let route: Route | null = null;
@@ -287,7 +366,7 @@ export function createDispatchApp(
     res.json({
       user: req.user,
       company: store.company(),
-      route,
+      route: driverRoute(route),
       mapSettings: { naverKeyId: store.mapSettings().naverKeyId },
     });
   });
@@ -317,19 +396,65 @@ export function createDispatchApp(
   app.put("/api/company", admin, async (req, res) => {
     assert(!routingBusy, "배차 작업이 끝난 뒤 회사 설정을 변경해 주세요.", 409);
     const c = req.body as Company;
-    assert(typeof c.name === "string" && c.name.trim() && typeof c.address === "string" && c.address.trim() && c.address.length <= 500, "회사명과 출발·복귀 주소를 입력해 주세요.");
-    assert(Number.isFinite(c.serviceMinutes) && c.serviceMinutes >= 0 && c.serviceMinutes <= 120, "배송지 체류 시간은 0~120분으로 입력해 주세요.");
-    assert(["kakao", "naver", "default"].includes(c.navigation), "길안내 설정을 확인해 주세요.");
-    assert(!store.one("SELECT id FROM routes WHERE status IN ('active','returning') LIMIT 1"), "운행 중에는 출발지를 변경할 수 없습니다. 회사 복귀 후 변경해 주세요.", 409);
+    assert(
+      typeof c.name === "string" &&
+        c.name.trim() &&
+        typeof c.address === "string" &&
+        c.address.trim() &&
+        c.address.length <= 500,
+      "회사명과 출발·복귀 주소를 입력해 주세요.",
+    );
+    assert(
+      Number.isFinite(c.serviceMinutes) &&
+        c.serviceMinutes >= 0 &&
+        c.serviceMinutes <= 120,
+      "배송지 체류 시간은 0~120분으로 입력해 주세요.",
+    );
+    assert(
+      ["kakao", "naver", "default"].includes(c.navigation),
+      "길안내 설정을 확인해 주세요.",
+    );
+    assert(
+      !store.one(
+        "SELECT id FROM routes WHERE status IN ('active','returning') LIMIT 1",
+      ),
+      "운행 중에는 출발지를 변경할 수 없습니다. 회사 복귀 후 변경해 주세요.",
+      409,
+    );
     routingBusy = true;
     try {
       const before = store.company();
       const point = hasLocation(c) ? { lat: c.lat, lng: c.lng } : c.address.trim() === before.address && hasLocation(before) ? { lat: before.lat, lng: before.lng } : await geocode(store, c.address.trim());
       store.transaction(() => {
-        assert(JSON.stringify(store.company()) === JSON.stringify(before) && !store.one("SELECT id FROM routes WHERE status IN ('active','returning') LIMIT 1"), "회사나 운행 정보가 변경되었습니다. 다시 확인해 주세요.", 409);
-        store.run("UPDATE settings SET value=? WHERE key=?", JSON.stringify({ name: c.name.trim().slice(0,100), address: c.address.trim(), ...point, serviceMinutes: c.serviceMinutes, navigation: c.navigation }), "company");
-        for (const route of store.all("SELECT id FROM routes WHERE status='planned'")) store.run("DELETE FROM settings WHERE key=?", "manual-route:" + route.id);
-        store.run("UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE routeId IN (SELECT id FROM routes WHERE status='planned')");
+        assert(
+          JSON.stringify(store.company()) === JSON.stringify(before) &&
+            !store.one(
+              "SELECT id FROM routes WHERE status IN ('active','returning') LIMIT 1",
+            ),
+          "회사나 운행 정보가 변경되었습니다. 다시 확인해 주세요.",
+          409,
+        );
+        store.run(
+          "UPDATE settings SET value=? WHERE key=?",
+          JSON.stringify({
+            name: c.name.trim().slice(0, 100),
+            address: c.address.trim(),
+            ...point,
+            serviceMinutes: c.serviceMinutes,
+            navigation: c.navigation,
+          }),
+          "company",
+        );
+        for (const route of store.all(
+          "SELECT id FROM routes WHERE status='planned'",
+        ))
+          store.run(
+            "DELETE FROM settings WHERE key=?",
+            "manual-route:" + route.id,
+          );
+        store.run(
+          "UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE routeId IN (SELECT id FROM routes WHERE status='planned')",
+        );
         store.run("DELETE FROM routes WHERE status='planned'");
       });
       notify("changed");
@@ -527,22 +652,46 @@ export function createDispatchApp(
     let address: string;
     let row: any;
     if (req.body.shipmentId !== undefined) {
-      assert(typeof req.body.shipmentId === "string", "배송지를 확인해 주세요.");
-      row = store.one("SELECT * FROM shipments WHERE id=?", req.body.shipmentId);
+      assert(
+        typeof req.body.shipmentId === "string",
+        "배송지를 확인해 주세요.",
+      );
+      row = store.one(
+        "SELECT * FROM shipments WHERE id=?",
+        req.body.shipmentId,
+      );
       assert(row, "배송지를 찾을 수 없습니다.", 404);
       if (req.user.role !== "admin") {
-        assert(store.one("SELECT id FROM routes WHERE id=? AND driverId=?", row.routeId, req.user.userId), "배정된 배송지만 길찾기할 수 있습니다.", 403);
+        assert(
+          store.one(
+            "SELECT id FROM routes WHERE id=? AND driverId=?",
+            row.routeId,
+            req.user.userId,
+          ),
+          "배정된 배송지만 길찾기할 수 있습니다.",
+          403,
+        );
       }
       address = row.address;
     } else {
       assert(req.user.role === "admin", "배정된 배송지를 선택해 주세요.", 403);
       address = req.body.address;
     }
-    assert(typeof address === "string" && address.trim() && address.length <= 500, "배송주소를 입력해 주세요.");
-    if (row && hasLocation(row)) return res.json({ lat: row.lat, lng: row.lng });
+    assert(
+      typeof address === "string" && address.trim() && address.length <= 500,
+      "배송주소를 입력해 주세요.",
+    );
+    if (row && hasLocation(row))
+      return res.json({ lat: row.lat, lng: row.lng });
     const point = await geocode(store, address.trim());
     if (row && !routingBusy) {
-      store.run("UPDATE shipments SET lat=?,lng=? WHERE id=? AND address=? AND status='pending' AND routeId IS NULL", point.lat, point.lng, row.id, address);
+      store.run(
+        "UPDATE shipments SET lat=?,lng=? WHERE id=? AND address=? AND status='pending' AND routeId IS NULL",
+        point.lat,
+        point.lng,
+        row.id,
+        address,
+      );
     }
     res.json(point);
   });
@@ -562,24 +711,139 @@ export function createDispatchApp(
   app.get("/api/imports/:id", admin, (req, res) => {
     const row = store.one("SELECT * FROM imports WHERE id=?", req.params.id);
     assert(row, "업로드를 찾을 수 없습니다.", 404);
-    res.json({ ...row, drafts: JSON.parse(row.drafts), storedName: undefined });
+    res.json({
+      ...row,
+      drafts: JSON.parse(row.drafts),
+      recognitionWarnings: JSON.parse(row.meta || "{}").warnings ?? [],
+      storedName: undefined,
+      meta: undefined,
+    });
   });
+  app.get("/api/catalog/:kind", admin, (req, res) => {
+    assert(
+      ["customers", "products"].includes(String(req.params.kind)),
+      "자료 종류를 확인해 주세요.",
+    );
+    res.json(
+      searchCatalog(
+        store,
+        req.params.kind as "customers" | "products",
+        typeof req.query.q === "string" ? req.query.q : "",
+      ),
+    );
+  });
+  app.get("/api/erp/status", admin, (_req, res) =>
+    res.json({
+      mode: "ecount-excel",
+      customers: store.one("SELECT COUNT(*) AS n FROM catalog_customers").n,
+      products: store.one("SELECT COUNT(*) AS n FROM catalog_products").n,
+    }),
+  );
+  app.post(
+    "/api/erp/catalog/:kind/import",
+    admin,
+    upload.single("file"),
+    async (req, res) => {
+      assert(req.file, "엑셀 파일을 선택해 주세요.");
+      assert(
+        ["customers", "products"].includes(String(req.params.kind)),
+        "자료 종류를 확인해 주세요.",
+      );
+      const result = await importCatalog(
+        store,
+        req.file.buffer,
+        req.file.originalname,
+        req.params.kind as "customers" | "products",
+      );
+      res.status(201).json(result);
+    },
+  );
+  app.post(
+    "/api/erp/sales/import",
+    admin,
+    upload.single("file"),
+    async (req, res) => {
+      assert(req.file, "E카운트 판매조회 엑셀을 선택해 주세요.");
+      const date = dateValue(req.body.serviceDate),
+        file = req.file;
+      const parsed = await parseSalesExport(
+        store,
+        file.buffer,
+        file.originalname,
+      );
+      const importId = id(),
+        storedName = importId + extname(file.originalname).toLowerCase(),
+        fileName = Buffer.from(file.originalname, "latin1").toString("utf8");
+      writeFileSync(join(dataDir, "uploads", storedName), file.buffer, {
+        mode: 0o600,
+        flag: "wx",
+      });
+      try {
+        store.run(
+          "INSERT INTO imports(id,fileName,storedName,mime,drafts,serviceDate,createdAt,meta) VALUES(?,?,?,?,?,?,?,?)",
+          importId,
+          fileName,
+          storedName,
+          file.mimetype,
+          JSON.stringify(parsed.drafts),
+          date,
+          new Date().toISOString(),
+          JSON.stringify({ source: "ecount-excel", warnings: parsed.warnings }),
+        );
+      } catch (error) {
+        try {
+          unlinkSync(join(dataDir, "uploads", storedName));
+        } catch {}
+        throw error;
+      }
+      notify("changed");
+      res
+        .status(201)
+        .json({
+          id: importId,
+          fileName,
+          rawText: "",
+          drafts: parsed.drafts,
+          serviceDate: date,
+          status: "review",
+          recognitionWarnings: parsed.warnings,
+        });
+    },
+  );
   const deviceReceiptKey = (req: Request, value: unknown) => {
     assert(
       typeof value === "string" && value.trim().length > 0 && value.length <= 128,
       "전표 저장 요청 번호가 올바르지 않습니다. 전표를 다시 확인해 주세요.",
       422,
     );
-    return "device-receipt:" + createHash("sha256")
-      .update((req as AuthRequest).user.userId).update("\0").update(value.trim()).digest("hex");
+    return (
+      "device-receipt:" +
+      createHash("sha256")
+        .update((req as AuthRequest).user.userId)
+        .update("\0")
+        .update(value.trim())
+        .digest("hex")
+    );
   };
   const mappedDeviceReceipt = (key: string) => {
     const setting = store.one("SELECT value FROM settings WHERE key=?", key);
     if (!setting) return undefined;
     let mapping: { importId?: string; digest?: string };
-    try { mapping = JSON.parse(setting.value); } catch { return undefined; }
-    if (!mapping || typeof mapping.importId !== "string" || typeof mapping.digest !== "string") return undefined;
-    const batch = store.one("SELECT * FROM imports WHERE id=?", mapping.importId);
+    try {
+      mapping = JSON.parse(setting.value);
+    } catch {
+      return undefined;
+    }
+    if (
+      !mapping ||
+      typeof mapping.importId !== "string" ||
+      typeof mapping.digest !== "string"
+    )
+      return undefined;
+    const batch = store.one(
+      "SELECT * FROM imports WHERE id=?",
+      mapping.importId,
+    );
     return batch ? { batch, digest: mapping.digest } : undefined;
   };
   app.post("/api/imports", admin, upload.single("file"), async (req, res) => {
@@ -606,7 +870,11 @@ export function createDispatchApp(
       supplierAddress: company.address,
     };
     if ([".xlsx", ".csv"].includes(extension)) {
-      assert(!deviceRecognition, "기기 인식 결과는 전표 사진과 함께 보내 주세요.", 422);
+      assert(
+        !deviceRecognition,
+        "기기 인식 결과는 전표 사진과 함께 보내 주세요.",
+        422,
+      );
       drafts = await parseSpreadsheet(file.buffer, file.originalname);
     } else if (deviceRecognition) {
       const recognizedText = typeof req.body.recognizedText === "string"
@@ -625,10 +893,16 @@ export function createDispatchApp(
       let layout: ReceiptLayout | undefined;
       if (req.body.recognizedLayout !== undefined) {
         try {
-          if (typeof req.body.recognizedLayout !== "string") throw new Error("Invalid layout field");
-          layout = normalizeReceiptLayout(JSON.parse(req.body.recognizedLayout));
+          if (typeof req.body.recognizedLayout !== "string")
+            throw new Error("Invalid layout field");
+          layout = normalizeReceiptLayout(
+            JSON.parse(req.body.recognizedLayout),
+          );
         } catch {
-          throw new AppError("전표 인식 위치 정보가 올바르지 않습니다. 사진을 다시 촬영하거나 선택해 주세요.", 422);
+          throw new AppError(
+            "전표 인식 위치 정보가 올바르지 않습니다. 사진을 다시 촬영하거나 선택해 주세요.",
+            422,
+          );
         }
       }
       validateReceiptImage(file.buffer);
@@ -636,12 +910,17 @@ export function createDispatchApp(
       drafts = [extractReceipt(rawText, layout, receiptContext).draft];
       if (req.body.deviceReceiptId !== undefined) {
         deviceKey = deviceReceiptKey(req, req.body.deviceReceiptId);
-        deviceDigest = createHash("sha256").update(JSON.stringify({
-          file: createHash("sha256").update(file.buffer).digest("hex"),
-          rawText, date,
-          // Omit absent layout so pending requests from older APKs keep their digest.
-          ...(layout ? { layout } : {}),
-        })).digest("hex");
+        deviceDigest = createHash("sha256")
+          .update(
+            JSON.stringify({
+              file: createHash("sha256").update(file.buffer).digest("hex"),
+              rawText,
+              date,
+              // Omit absent layout so pending requests from older APKs keep their digest.
+              ...(layout ? { layout } : {}),
+            }),
+          )
+          .digest("hex");
       }
     } else {
       const cancellation = new AbortController();
@@ -675,7 +954,11 @@ export function createDispatchApp(
       // another API process cannot create a second import or original file.
       const previous = deviceKey ? mappedDeviceReceipt(deviceKey) : undefined;
       if (previous) {
-        assert(previous.digest === deviceDigest, "같은 전표 저장 요청에 다른 사진이나 인식 내용이 포함되어 있습니다. 새 전표로 다시 확인해 주세요.", 409);
+        assert(
+          previous.digest === deviceDigest,
+          "같은 전표 저장 요청에 다른 사진이나 인식 내용이 포함되어 있습니다. 새 전표로 다시 확인해 주세요.",
+          409,
+        );
         return {
           id: previous.batch.id, fileName: previous.batch.fileName,
           rawText: previous.batch.rawText, drafts: JSON.parse(previous.batch.drafts),
@@ -685,15 +968,30 @@ export function createDispatchApp(
       const importId = id(),
         storedName = importId + extension,
         fileName = Buffer.from(file.originalname, "latin1").toString("utf8");
-      writeFileSync(join(dataDir, "uploads", storedName), file.buffer, { mode: 0o600, flag: "wx" });
+      writeFileSync(join(dataDir, "uploads", storedName), file.buffer, {
+        mode: 0o600,
+        flag: "wx",
+      });
       store.run(
         "INSERT INTO imports(id,fileName,storedName,mime,rawText,drafts,serviceDate,createdAt) VALUES(?,?,?,?,?,?,?,?)",
         importId, fileName, storedName, file.mimetype, rawText,
         JSON.stringify(drafts), date, new Date().toISOString(),
       );
-      if (deviceKey) store.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", deviceKey, JSON.stringify({ importId, digest: deviceDigest }));
+      if (deviceKey)
+        store.run(
+          "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          deviceKey,
+          JSON.stringify({ importId, digest: deviceDigest }),
+        );
       created = true;
-      return { id: importId, fileName, rawText, drafts, serviceDate: date, status: "review" };
+      return {
+        id: importId,
+        fileName,
+        rawText,
+        drafts,
+        serviceDate: date,
+        status: "review",
+      };
     });
     if (created) notify("changed");
     res.status(201).json(result);
@@ -704,7 +1002,7 @@ export function createDispatchApp(
     importId: string | null = null,
   ) =>
     store.run(
-      "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       id(),
       importId,
       s.recipient,
@@ -716,6 +1014,10 @@ export function createDispatchApp(
       s.lng ?? null,
       date,
       new Date().toISOString(),
+      s.amount ?? null,
+      s.customerCode ?? null,
+      s.salesReference ?? null,
+      s.erpSourceKey ?? null,
     );
   app.post("/api/imports/:id/commit", admin, (req, res) => {
     const batch = store.one("SELECT * FROM imports WHERE id=?", req.params.id);
@@ -732,14 +1034,58 @@ export function createDispatchApp(
       assert(current, "업로드를 찾을 수 없습니다.", 404);
       if (commitDeviceKey) {
         const previous = mappedDeviceReceipt(commitDeviceKey);
-        assert(previous?.batch.id === batch.id, "전표 저장 요청 번호가 해당 전표와 일치하지 않습니다.", 409);
+        assert(
+          previous?.batch.id === batch.id,
+          "전표 저장 요청 번호가 해당 전표와 일치하지 않습니다.",
+          409,
+        );
         if (current.status === "committed") {
-          assert(JSON.stringify(rows) === JSON.stringify(JSON.parse(current.drafts)), "이미 저장한 전표와 수정 내용이 다릅니다. 배송 내역에서 확인해 주세요.", 409);
+          assert(
+            JSON.stringify(rows) === JSON.stringify(JSON.parse(current.drafts)),
+            "이미 저장한 전표와 수정 내용이 다릅니다. 배송 내역에서 확인해 주세요.",
+            409,
+          );
           count = current.count;
           return;
         }
       }
       assert(current.status === "review", "이미 등록한 전표입니다.", 409);
+      const originals = JSON.parse(current.drafts) as Shipment[];
+      const allowed = new Set(
+        originals.map((row) => row.erpSourceKey).filter(Boolean),
+      );
+      const keys = rows
+        .map((row) => row.erpSourceKey)
+        .filter(Boolean) as string[];
+      assert(
+        new Set(keys).size === keys.length &&
+          keys.every((key) => allowed.has(key)),
+        "판매전표 번호가 원본과 일치하지 않습니다.",
+        409,
+      );
+      if (JSON.parse(current.meta || "{}").source === "ecount-excel")
+        assert(
+          rows.every(
+            (row) => row.erpSourceKey && allowed.has(row.erpSourceKey),
+          ),
+          "판매내역은 원본의 전표번호를 유지해 주세요.",
+          409,
+        );
+      for (const key of keys) {
+        assert(
+          !store.one(
+            "SELECT sourceKey FROM erp_sales_links WHERE sourceKey=?",
+            key,
+          ),
+          "이미 등록한 판매전표가 포함되어 있습니다. 중복 내역을 제외하고 다시 가져와 주세요.",
+          409,
+        );
+        store.run(
+          "INSERT INTO erp_sales_links(sourceKey,importId) VALUES(?,?)",
+          key,
+          batch.id,
+        );
+      }
       for (const row of rows) insertShipment(row, batch.serviceDate, batch.id);
       store.run(
         "UPDATE imports SET status=?,count=?,drafts=? WHERE id=?",
@@ -758,9 +1104,16 @@ export function createDispatchApp(
   });
   app.delete("/api/imports/:id", admin, (req, res) => {
     const deleted = store.transaction(() => {
-      const batch = store.one("SELECT * FROM imports WHERE id=?", req.params.id);
+      const batch = store.one(
+        "SELECT * FROM imports WHERE id=?",
+        req.params.id,
+      );
       assert(batch, "업로드를 찾을 수 없습니다.", 404);
-      assert(!routingBusy, "배차를 계산 중입니다. 잠시 후 다시 삭제해 주세요.", 409);
+      assert(
+        !routingBusy,
+        "배차를 계산 중입니다. 잠시 후 다시 삭제해 주세요.",
+        409,
+      );
       assert(
         ["review", "committed"].includes(batch.status) &&
           !store.one(
@@ -770,9 +1123,13 @@ export function createDispatchApp(
         "이미 배차했거나 운행·배송 처리한 전표는 삭제할 수 없습니다. 미배차 전표만 삭제해 주세요.",
         409,
       );
-      const deletedShipments = Number(store.run("DELETE FROM shipments WHERE importId=?", batch.id).changes);
+      const deletedShipments = Number(
+        store.run("DELETE FROM shipments WHERE importId=?", batch.id).changes,
+      );
       store.run("DELETE FROM imports WHERE id=?", batch.id);
-      for (const setting of store.all("SELECT key,value FROM settings WHERE key GLOB 'device-receipt:*'")) {
+      for (const setting of store.all(
+        "SELECT key,value FROM settings WHERE key GLOB 'device-receipt:*'",
+      )) {
         let mapping;
         try { mapping = JSON.parse(setting.value); } catch { continue; }
         if (mapping?.importId === batch.id)
@@ -868,6 +1225,10 @@ export function createDispatchApp(
   );
   app.post("/api/shipments", admin, (req, res) => {
     const rows = validateShipments(req.body.rows);
+    assert(
+      rows.every((row) => !row.erpSourceKey),
+      "판매조회 가져오기에서 등록해 주세요.",
+    );
     const date = dateValue(req.body.serviceDate);
     store.transaction(() => {
       for (const row of rows) insertShipment(row, date);
@@ -880,23 +1241,54 @@ export function createDispatchApp(
     assert(!routingBusy, "배차 작업이 끝난 뒤 주소를 다시 확인해 주세요.", 409);
     const date = dateValue(req.body.serviceDate);
     const ids = req.body.shipmentIds;
-    assert(ids === undefined || (Array.isArray(ids) && ids.length > 0 && ids.length <= 2000 && ids.every((v: unknown) => typeof v === "string" && v.length <= 128)), "확인할 배송지를 선택해 주세요.");
+    assert(
+      ids === undefined ||
+        (Array.isArray(ids) &&
+          ids.length > 0 &&
+          ids.length <= 2000 &&
+          ids.every((v: unknown) => typeof v === "string" && v.length <= 128)),
+      "확인할 배송지를 선택해 주세요.",
+    );
     res.json(await locateSavedAddresses(date, ids));
   });
   app.post("/api/shipments/:id/assign", admin, async (req, res) => {
-    assert(!routingBusy, "다른 배차 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.", 409);
-    assert(typeof req.body.driverId === "string" && req.body.driverId.trim(), "배정할 기사를 선택해 주세요.");
+    assert(
+      !routingBusy,
+      "다른 배차 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.",
+      409,
+    );
+    assert(
+      typeof req.body.driverId === "string" && req.body.driverId.trim(),
+      "배정할 기사를 선택해 주세요.",
+    );
     routingBusy = true;
     try {
       // A successful assignment response may be lost on a mobile connection.
       // Repeating the same choice returns the existing manual course.
-      const assigned = store.one("SELECT * FROM shipments WHERE id=?", req.params.id);
+      const assigned = store.one(
+        "SELECT * FROM shipments WHERE id=?",
+        req.params.id,
+      );
       if (assigned?.status === "assigned" && assigned.routeId) {
-        const existing = store.one("SELECT * FROM routes WHERE id=? AND driverId=? AND status='planned'", assigned.routeId, req.body.driverId);
-        if (existing && store.one("SELECT key FROM settings WHERE key=?", "manual-route:" + existing.id))
+        const existing = store.one(
+          "SELECT * FROM routes WHERE id=? AND driverId=? AND status='planned'",
+          assigned.routeId,
+          req.body.driverId,
+        );
+        if (
+          existing &&
+          store.one(
+            "SELECT key FROM settings WHERE key=?",
+            "manual-route:" + existing.id,
+          )
+        )
           return res.json(store.route(existing));
       }
-      const route = await assignPendingShipment(store, { shipmentId: String(req.params.id), driverId: req.body.driverId }, { roadRouting: options.roadRouting });
+      const route = await assignPendingShipment(
+        store,
+        { shipmentId: String(req.params.id), driverId: req.body.driverId },
+        { roadRouting: options.roadRouting },
+      );
       notify("changed", {}, route.driverId);
       res.json(route);
     } finally { routingBusy = false; }
@@ -914,7 +1306,7 @@ export function createDispatchApp(
     if (values.address !== old.address && !isPoint(req.body)) { values.lat = null; values.lng = null; }
     const row = validateShipments([values])[0];
     store.run(
-      "UPDATE shipments SET recipient=?,address=?,phone=?,items=?,notes=?,lat=?,lng=? WHERE id=?",
+      "UPDATE shipments SET recipient=?,address=?,phone=?,items=?,notes=?,lat=?,lng=?,amount=?,customerCode=? WHERE id=?",
       row.recipient,
       row.address,
       row.phone ?? "",
@@ -922,6 +1314,8 @@ export function createDispatchApp(
       row.notes ?? "",
       row.lat ?? null,
       row.lng ?? null,
+      row.amount ?? null,
+      row.customerCode ?? null,
       old.id,
     );
     notify("changed");
@@ -929,13 +1323,44 @@ export function createDispatchApp(
     res.json({ ok: true });
   });
   app.delete("/api/shipments/:id", admin, async (req, res) => {
-    assert(!routingBusy, "배차를 계산 중입니다. 잠시 후 다시 삭제해 주세요.", 409);
+    assert(
+      !routingBusy,
+      "배차를 계산 중입니다. 잠시 후 다시 삭제해 주세요.",
+      409,
+    );
     routingBusy = true;
     try {
-      const removed = await removePlannedShipment(store, { shipmentId: String(req.params.id) }, { roadRouting: options.roadRouting });
+      const removed = await removePlannedShipment(
+        store,
+        { shipmentId: String(req.params.id) },
+        { roadRouting: options.roadRouting },
+      );
       notify("changed", {}, removed.driverId ?? undefined);
       res.json({ ok: true });
-    } finally { routingBusy = false; }
+    } finally {
+      routingBusy = false;
+    }
+  });
+  app.post("/api/dispatch/drop", admin, async (req, res) => {
+    assert(
+      !routingBusy,
+      "다른 배차 작업이 진행 중입니다. 잠시 후 다시 옮겨 주세요.",
+      409,
+    );
+    const date = dateValue(req.body.serviceDate);
+    routingBusy = true;
+    try {
+      const result = await dropShipment(
+        store,
+        { ...req.body, serviceDate: date },
+        { roadRouting: options.roadRouting },
+      );
+      for (const driverId of result.driverIds) notify("changed", {}, driverId);
+      if (!result.driverIds.length) notify("changed");
+      res.json({ ok: true, revision: result.revision });
+    } finally {
+      routingBusy = false;
+    }
   });
   app.get("/api/dashboard", admin, (req, res) => {
     const date = dateValue(req.query.date),
@@ -948,6 +1373,7 @@ export function createDispatchApp(
       }));
     res.json({
       date,
+      dispatchRevision: dispatchRevision(store, date),
       company: store.company(),
       mapSettings: store.mapSettings(),
       receiptCapabilities: { deviceText: true, maxTextLength: 50_000 },
@@ -970,7 +1396,9 @@ export function createDispatchApp(
   app.get("/api/routes", admin, (req, res) =>
     res.json(store.routes(dateValue(req.query.date))),
   );
-  app.get("/api/routing-status", admin, (_req, res) => res.json(trafficRoutingStatus()));
+  app.get("/api/routing-status", admin, (_req, res) =>
+    res.json(trafficRoutingStatus()),
+  );
   app.post("/api/routes/optimize", admin, async (req, res) => {
     assert(
       !routingBusy,
@@ -990,18 +1418,45 @@ export function createDispatchApp(
       );
       const manualRoutes = store.routes(date).filter((route) => route.status === "planned" && route.manualAssigned);
       const manualRouteIds = new Set(manualRoutes.map((route) => route.id));
-      const manualDriverIds = new Set(manualRoutes.map((route) => route.driverId));
-      const automaticRoutes = store.routes(date).filter((route) => route.status === "planned" && !manualRouteIds.has(route.id));
+      const manualDriverIds = new Set(
+        manualRoutes.map((route) => route.driverId),
+      );
+      const automaticRoutes = store
+        .routes(date)
+        .filter(
+          (route) =>
+            route.status === "planned" && !manualRouteIds.has(route.id),
+        );
       let shipments = store
         .shipments(date)
-        .filter((s) => ["pending", "assigned"].includes(s.status) && !manualRouteIds.has(s.routeId ?? ""));
-      if (!shipments.length && manualRoutes.length) return res.json(store.routes(date));
+        .filter(
+          (s) =>
+            ["pending", "assigned"].includes(s.status) &&
+            !manualRouteIds.has(s.routeId ?? ""),
+        );
+      if (!shipments.length && manualRoutes.length)
+        return res.json(store.routes(date));
       assert(shipments.length, "배차할 배송지가 없습니다.");
       if (shipments.some((row) => !hasLocation(row))) {
-        const checked = await locateSavedAddresses(date, shipments.map((row) => row.id), true, 200);
-        shipments = store.shipments(date).filter((row) => ["pending", "assigned"].includes(row.status) && !manualRouteIds.has(row.routeId ?? ""));
+        const checked = await locateSavedAddresses(
+          date,
+          shipments.map((row) => row.id),
+          true,
+          200,
+        );
+        shipments = store
+          .shipments(date)
+          .filter(
+            (row) =>
+              ["pending", "assigned"].includes(row.status) &&
+              !manualRouteIds.has(row.routeId ?? ""),
+          );
         const missing = shipments.filter((row) => !hasLocation(row));
-        assert(!missing.length, `${missing.length}곳의 배송주소를 확인하지 못했습니다. ${checked.unresolved[0]?.message ?? "주소 자동 확인을 다시 실행해 주세요."}`, 422);
+        assert(
+          !missing.length,
+          `${missing.length}곳의 배송주소를 확인하지 못했습니다. ${checked.unresolved[0]?.message ?? "주소 자동 확인을 다시 실행해 주세요."}`,
+          422,
+        );
       }
       const company = store.company();
       let drivers = store
@@ -1016,8 +1471,18 @@ export function createDispatchApp(
         );
       if (Array.isArray(req.body.driverIds))
         drivers = drivers.filter((d) => req.body.driverIds.includes(d.id));
-      assert(drivers.length, "개별 배차 코스를 유지하고 있습니다. 다른 기사를 선택하거나 미배차 배송지를 기사에게 직접 배정해 주세요.", 422);
-      const snapshot = () => JSON.stringify({ shipments: store.shipments(date), routes: store.routes(date), drivers: store.drivers(), company: store.company() });
+      assert(
+        drivers.length,
+        "개별 배차 코스를 유지하고 있습니다. 다른 기사를 선택하거나 미배차 배송지를 기사에게 직접 배정해 주세요.",
+        422,
+      );
+      const snapshot = () =>
+        JSON.stringify({
+          shipments: store.shipments(date),
+          routes: store.routes(date),
+          drivers: store.drivers(),
+          company: store.company(),
+        });
       const original = snapshot();
       const estimated = await planDispatch(company, shipments, drivers, {
         roadRouting: options.roadRouting !== false,
@@ -1026,7 +1491,11 @@ export function createDispatchApp(
         serviceDate: date,
       });
       store.transaction(() => {
-        assert(snapshot() === original, "배송지나 기사 정보가 변경되어 배차를 중단했습니다. 다시 실행해 주세요.", 409);
+        assert(
+          snapshot() === original,
+          "배송지나 기사 정보가 변경되어 배차를 중단했습니다. 다시 실행해 주세요.",
+          409,
+        );
         assert(
           !store.one(
             "SELECT id FROM routes WHERE serviceDate=? AND status IN ('active','returning')",
@@ -1036,8 +1505,14 @@ export function createDispatchApp(
           409,
         );
         for (const old of automaticRoutes) {
-          store.run("UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE routeId=? AND status='assigned'", old.id);
-          store.run("DELETE FROM routes WHERE id=? AND status='planned'", old.id);
+          store.run(
+            "UPDATE shipments SET routeId=NULL,sequence=NULL,status='pending' WHERE routeId=? AND status='assigned'",
+            old.id,
+          );
+          store.run(
+            "DELETE FROM routes WHERE id=? AND status='planned'",
+            old.id,
+          );
         }
         for (const { driver, stops, estimate, planning } of estimated) {
           const routeId = id();
@@ -1090,9 +1565,24 @@ export function createDispatchApp(
         route.company,
         stops as any,
         options.roadRouting !== false,
-        { trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : route.estimateSource === "naver-traffic" ? true : undefined },
+        {
+          trafficRequired:
+            typeof req.body.trafficRequired === "boolean"
+              ? req.body.trafficRequired
+              : route.estimateSource === "naver-traffic"
+                ? true
+                : undefined,
+        },
       );
-      const planning = routePlanning(route.company, stops as (Shipment & { lat: number; lng: number })[], estimate, resolveDeparture({ departureAt: req.body.departureAt ?? route.planning?.departureAt, serviceDate: route.serviceDate }));
+      const planning = routePlanning(
+        route.company,
+        stops as (Shipment & { lat: number; lng: number })[],
+        estimate,
+        resolveDeparture({
+          departureAt: req.body.departureAt ?? route.planning?.departureAt,
+          serviceDate: route.serviceDate,
+        }),
+      );
       store.transaction(() => {
         assert(
           store.one("SELECT status FROM routes WHERE id=?", row.id)?.status ===
@@ -1112,7 +1602,11 @@ export function createDispatchApp(
           JSON.stringify(planning),
           row.id,
         );
-        store.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", "manual-route:" + row.id, "true");
+        store.run(
+          "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          "manual-route:" + row.id,
+          "true",
+        );
       });
       notify("changed", {}, row.driverId);
       res.json({ ok: true });
@@ -1173,7 +1667,14 @@ export function createDispatchApp(
               r.company,
               stops,
               options.roadRouting !== false,
-              { trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : r.estimateSource === "naver-traffic" ? true : undefined },
+              {
+                trafficRequired:
+                  typeof req.body.trafficRequired === "boolean"
+                    ? req.body.trafficRequired
+                    : r.estimateSource === "naver-traffic"
+                      ? true
+                      : undefined,
+              },
             ),
           };
         }),
@@ -1194,7 +1695,15 @@ export function createDispatchApp(
               s.id,
             ),
           );
-          const planning = routePlanning(r.company, r.stops as (Shipment & { lat: number; lng: number })[], r.estimate, resolveDeparture({ departureAt: req.body.departureAt ?? r.planning?.departureAt, serviceDate: r.serviceDate }));
+          const planning = routePlanning(
+            r.company,
+            r.stops as (Shipment & { lat: number; lng: number })[],
+            r.estimate,
+            resolveDeparture({
+              departureAt: req.body.departureAt ?? r.planning?.departureAt,
+              serviceDate: r.serviceDate,
+            }),
+          );
           store.run(
             "UPDATE routes SET distanceKm=?,durationMinutes=?,estimateSource=?,geometry=?,planning=? WHERE id=?",
             r.estimate.distanceKm,
@@ -1206,9 +1715,16 @@ export function createDispatchApp(
           );
           if (!r.stops.length) {
             store.run("DELETE FROM routes WHERE id=?", r.id);
-            store.run("DELETE FROM settings WHERE key=?", "manual-route:" + r.id);
+            store.run(
+              "DELETE FROM settings WHERE key=?",
+              "manual-route:" + r.id,
+            );
           } else {
-            store.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", "manual-route:" + r.id, "true");
+            store.run(
+              "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+              "manual-route:" + r.id,
+              "true",
+            );
           }
         }
       });
@@ -1251,7 +1767,11 @@ export function createDispatchApp(
       row.id,
     );
     notify("changed", {}, req.user.userId);
-    res.json(store.route(store.one("SELECT * FROM routes WHERE id=?", row.id)));
+    res.json(
+      driverRoute(
+        store.route(store.one("SELECT * FROM routes WHERE id=?", row.id)),
+      ),
+    );
   });
   app.post("/api/driver/stops/:id/complete", driver, (request, res) => {
     const req = request as AuthRequest,
@@ -1296,7 +1816,9 @@ export function createDispatchApp(
     });
     notify("changed", {}, req.user.userId);
     res.json(
-      store.route(store.one("SELECT * FROM routes WHERE id=?", route.id)),
+      driverRoute(
+        store.route(store.one("SELECT * FROM routes WHERE id=?", route.id)),
+      ),
     );
   });
   app.post("/api/driver/routes/:id/return", driver, (request, res) => {

@@ -204,10 +204,15 @@ async function writeDraft(draft: DeviceReceiptDraft) {
       items: row.items.map((item) => ({
         name: item.name,
         quantity: item.quantity,
+        ...(item.code ? { code: item.code } : {}),
       })),
       notes: row.notes,
       lat: row.lat,
       lng: row.lng,
+      ...(row.amount !== undefined ? { amount: row.amount } : {}),
+      ...(row.customerCode ? { customerCode: row.customerCode } : {}),
+      ...(row.salesReference ? { salesReference: row.salesReference } : {}),
+      ...(row.erpSourceKey ? { erpSourceKey: row.erpSourceKey } : {}),
     })),
   };
   const payload = encode({ version: 1, serverUrl: API_URL, draft: next });

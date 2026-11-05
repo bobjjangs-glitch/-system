@@ -561,6 +561,18 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
       lat = null;
       lng = null;
     }
+    const amount =
+      row.amount == null || row.amount === "" ? null : Number(row.amount);
+    if (
+      amount !== null &&
+      (!Number.isFinite(amount) || amount < 0 || amount > 1e14)
+    )
+      throw new Error(`${i + 1}번 금액을 확인해 주세요.`);
+    if (
+      row.erpSourceKey &&
+      !/^ecount-sale-[a-f0-9]{64}$/.test(row.erpSourceKey)
+    )
+      throw new Error("판매전표 번호를 확인해 주세요.");
     return {
       recipient: row.recipient.trim(),
       address: row.address.trim(),
@@ -569,9 +581,18 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
       items: row.items.map((v: any) => ({
         name: v.name.trim().slice(0, 200),
         quantity: Number(v.quantity),
+        ...(v.code ? { code: String(v.code).slice(0, 100) } : {}),
       })),
       lat,
       lng,
+      ...(amount !== null ? { amount } : {}),
+      ...(row.customerCode
+        ? { customerCode: String(row.customerCode).slice(0, 100) }
+        : {}),
+      ...(row.salesReference
+        ? { salesReference: String(row.salesReference).slice(0, 200) }
+        : {}),
+      ...(row.erpSourceKey ? { erpSourceKey: row.erpSourceKey } : {}),
     };
   });
 }
