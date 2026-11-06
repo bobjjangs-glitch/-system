@@ -1,10 +1,11 @@
+import AdminDeleteButton from "./AdminDeleteButton";
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { api } from "./api";
 import { Sheet, Button, Field, Card, C, s } from "./ui";
-import { readTime } from "./ecountTypes";
+import { readTime } from "./erpTypes";
 import { validSalesDate } from "./salesReference";
-import SalesInvoiceStatement from "./SalesInvoiceStatement";
+import { InvoiceContents } from "./SalesInvoiceStatement";
 import {
   invoiceMoney,
   invoiceStatus,
@@ -20,11 +21,13 @@ export default function CompanySalesBrowser({
   onClose,
   onSaved,
   onFindInvoice,
+  onRecommend,
 }: {
   batchId: string | null;
   onClose: () => void;
   onSaved: (date: string) => void;
   onFindInvoice?: () => void;
+  onRecommend?: (date: string) => void;
 }) {
   const [list, setList] = useState<SalesList | null>(null),
     [error, setError] = useState(""),
@@ -33,9 +36,10 @@ export default function CompanySalesBrowser({
     [query, setQuery] = useState(""),
     [serviceDate, setServiceDate] = useState(""),
     [detailKey, setDetailKey] = useState<string | null>(null),
+    [detail, setDetail] = useState<SalesDocument | null>(null),
+    [detailError, setDetailError] = useState(""),
     [overrides, setOverrides] = useState<Overrides>({}),
-    [message, setMessage] = useState(""),
-    [visibleCount, setVisibleCount] = useState(30);
+    [message, setMessage] = useState("");
   const active = useRef(true),
     guard = useRef(false);
   useEffect(() => {
@@ -81,8 +85,15 @@ export default function CompanySalesBrowser({
         .toLocaleLowerCase()
         .includes(query.toLocaleLowerCase().trim()),
     ) ?? [];
-  useEffect(() => setVisibleCount(30), [query, list?.id]);
-  const detail = list?.documents.find((d) => d.sourceKey === detailKey) ?? null;
+  useEffect(() => {
+    const doc = list?.documents.find(d => d.sourceKey === detailKey), controller = new AbortController();
+    setDetail(null); setDetailError("");
+    if (doc && list?.historical) { setDetail(doc); return () => controller.abort(); }
+    if (doc) api<{document: SalesDocument}>("/api/company-erp/invoices?reference="+encodeURIComponent(doc.reference), {signal: controller.signal})
+      .then(value => { if (!controller.signal.aborted) setDetail({...value.document, registered:doc.registered, eligible:value.document.eligible && !doc.registered}); })
+      .catch(e => { if (!controller.signal.aborted) setDetailError(e.message); });
+    return () => controller.abort();
+  }, [detailKey, list?.id]);
   const picked = list?.documents.filter((d) => selected.has(d.sourceKey)) ?? [];
   const toggle = (key: string) =>
     setSelected((old) => {
@@ -90,8 +101,8 @@ export default function CompanySalesBrowser({
       n.has(key) ? n.delete(key) : n.add(key);
       return n;
     });
-  const submit = async () => {
-    if (!list || guard.current || !selected.size) return;
+  const submit = async (keys = [...selected]) => {
+    if (!list || guard.current || !keys.length) return;
     guard.current = true;
     setBusy(true);
     setError("");
@@ -102,7 +113,7 @@ export default function CompanySalesBrowser({
         {
           method: "POST",
           body: JSON.stringify({
-            sourceKeys: [...selected],
+            sourceKeys: keys,
             serviceDate,
             deliveryOverrides: overrides,
           }),
@@ -110,6 +121,7 @@ export default function CompanySalesBrowser({
       );
       if (!active.current) return;
       setSelected(new Set());
+      setDetailKey(null);
       setMessage(
         `${result.count}건을 배차 대기에 등록했습니다.${result.alreadyRegistered ? ` 이미 등록된 ${result.alreadyRegistered}건은 중복 등록하지 않았습니다.` : ""}`,
       );
@@ -121,6 +133,18 @@ export default function CompanySalesBrowser({
       guard.current = false;
       if (active.current) setBusy(false);
     }
+  };
+  const confirmDetail = async () => {
+    if (!list || !detail || guard.current) return;
+    guard.current = true;setBusy(true);setDetailError("");
+    try {
+      const result = await api<{count:number;alreadyRegistered:number}>("/api/company-erp/sales/confirm-reference", {
+        method:"POST",body:JSON.stringify({reference:detail.reference,fingerprint:detail.fingerprint,serviceDate,delivery:overrides[detail.sourceKey]}) });
+      if (!active.current) return;
+      setDetailKey(null);setMessage(`${result.count}건을 전표로 등록했습니다.${result.alreadyRegistered ? " 이미 등록한 전표는 중복 등록하지 않았습니다." : ""}`);
+      onSaved(serviceDate);setList(await api<SalesList>("/api/company-erp/sales/lists/"+list.id));
+    } catch(e) { if(active.current)setDetailError((e as Error).message); }
+    finally { guard.current=false;if(active.current)setBusy(false); }
   };
   const reload = async () => {
     if (!list || guard.current) return;
@@ -165,6 +189,7 @@ export default function CompanySalesBrowser({
         )}
         {list && (
           <>
+            <AdminDeleteButton kind="imports" id={list.id} name={`${list.salesDate} 판매조회 목록`} disabled={busy} onDeleted={() => { onClose(); onSaved(list.serviceDate); }} />
             <Text style={s.h3}>
               {list.salesDate} 판매내역 · {list.documents.length}건
             </Text>
@@ -225,7 +250,7 @@ export default function CompanySalesBrowser({
                 onPress={onFindInvoice}
               />
             )}
-            {filtered.slice(0, visibleCount).map((doc) => (
+            {filtered.map((doc) => (
               <Card key={doc.sourceKey} style={{ marginTop: 12 }}>
                 <View
                   style={{
@@ -312,13 +337,6 @@ export default function CompanySalesBrowser({
                 </View>
               </Card>
             ))}
-            {filtered.length > visibleCount && (
-              <Button
-                title={`판매전표 더 보기 · ${visibleCount}/${filtered.length}건`}
-                secondary
-                onPress={() => setVisibleCount((n) => n + 30)}
-              />
-            )}
             {!list.historical && (
               <View style={{ gap: 12, marginTop: 18 }}>
                 <Text style={s.h3}>
@@ -333,7 +351,7 @@ export default function CompanySalesBrowser({
                   disabled={
                     busy || !picked.length || !validSalesDate(serviceDate)
                   }
-                  onPress={submit}
+                  onPress={() => void submit()}
                 />
                 <Button
                   title="ERP에서 판매내역 다시 가져오기"
@@ -343,6 +361,7 @@ export default function CompanySalesBrowser({
                 />
               </View>
             )}
+            {!!message && onRecommend && <View style={{ marginTop: 14 }}><Button title="등록한 전표로 지역별 배차 추천" onPress={() => onRecommend(serviceDate)} disabled={busy} /></View>}
             {!!message && (
               <Text
                 accessibilityLiveRegion="polite"
@@ -354,10 +373,10 @@ export default function CompanySalesBrowser({
           </>
         )}
       </Sheet>
-      <SalesInvoiceStatement
-        doc={detail ? { ...detail, ...overrides[detail.sourceKey] } : null}
-        onClose={() => setDetailKey(null)}
-      >
+      <Sheet visible={!!detailKey} title="판매전표 입력 · ERP 내용 확인" onClose={() => { if(!busy)setDetailKey(null); }}>
+        {!detail && !detailError && <><ActivityIndicator color={C.green}/><Text style={s.muted}>ERP 판매 수정 화면의 최신 내용을 불러오는 중…</Text></>}
+        {!!detailError && <Text accessibilityRole="alert" style={{color:C.red,marginBottom:14}}>{detailError}</Text>}
+        {detail && <InvoiceContents doc={{...detail,...overrides[detail.sourceKey]}} />}
         {detail && list && !list.historical && detail.eligible && (
           <View style={{ marginTop: 24, gap: 10 }}>
             <Text style={s.h3}>배차용 배송정보 확인</Text>
@@ -381,19 +400,12 @@ export default function CompanySalesBrowser({
                 editable={!busy}
               />
             ))}
-            <Button
-              title={
-                selected.has(detail.sourceKey)
-                  ? "이 전표 선택 해제"
-                  : "이 전표 배차 선택"
-              }
-              secondary
-              disabled={busy}
-              onPress={() => toggle(detail.sourceKey)}
-            />
+            <Text style={s.muted}>ERP 판매 수정 화면의 원본 내용을 자동으로 채웠습니다. 확인하면 이 전표의 품목·수량·단가·금액·합계·적요를 배송 전표로 함께 등록합니다.</Text>
+            <Button title={busy ? "전표 등록 중…" : "확인하고 전표 등록"}
+              disabled={busy || !validSalesDate(serviceDate)} onPress={() => void confirmDetail()} />
           </View>
         )}
-      </SalesInvoiceStatement>
+      </Sheet>
     </>
   );
 }

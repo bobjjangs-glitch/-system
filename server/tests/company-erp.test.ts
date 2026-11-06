@@ -1,3 +1,4 @@
+import { searchCatalog } from "../erpCatalog.ts";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -337,4 +338,24 @@ test("20,000개 초과 검색 자료를 형식 오류로 처리하지 않으며 
       e.message.includes("snapshot") &&
       !e.message.includes(token),
   );
+});
+
+test("거래처·품목 자동 갱신은 동시 요청을 합치고 60초 안에는 완전한 저장 목록을 재사용한다",async(t)=>{
+ const f=await fixture(t);
+ const [a,b]=await Promise.all([f.client.refreshCatalogs(),f.client.refreshCatalogs()]);
+ assert.equal((a.customers as any).count,1);assert.equal((b.products as any).count,1);
+ assert.equal(f.calls.length,2);
+ const c=await f.client.refreshCatalogs();assert.equal((c.customers as any).cached,true);assert.equal(f.calls.length,2);
+});
+test("자동 갱신에서 품목 연결 실패는 빈 성공 목록으로 바꾸지 않고 거래처 성공과 구별한다",async(t)=>{
+ const f=await fixture(t);f.state.mutate=(data:any)=>data.kind==='products'?{...data,items:[],total:2}:data;
+ const value=await f.client.refreshCatalogs();assert.equal((value.customers as any).count,1);assert.match((value.products as any).error,/일부|전체/);
+ assert.equal(f.store.one("SELECT COUNT(*) n FROM catalog_products").n,0);
+});
+
+test("제거된 API 캐시가 남아 있어도 기존 엑셀 품목을 가리거나 가격을 대체하지 않는다",async(t)=>{
+ const f=await fixture(t);
+ f.store.run("INSERT INTO catalog_products VALUES('excel-row','P-1','이전 엑셀 품목','',100,'ecount','2026-11-06')");
+ f.store.run("INSERT INTO catalog_products VALUES('retired-row','P-1','종료된 API 품목','',999999,'ecount-api','2026-11-06')");
+ const rows=searchCatalog(f.store,"products","P-1");assert.equal(rows.length,1);assert.equal(rows[0].unitPrice,100);assert.equal(rows[0].name,"이전 엑셀 품목");
 });

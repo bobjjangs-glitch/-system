@@ -737,6 +737,7 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
             )
             .map((key) => [key, v[key]]),
         ),
+        ...(["erp", "manual", "ocr"].includes(v.priceOrigin) ? { priceOrigin: v.priceOrigin } : {}),
         ...(["taxable", "exempt"].includes(v.taxType)
           ? { taxType: v.taxType }
           : {}),

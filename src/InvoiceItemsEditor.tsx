@@ -121,7 +121,9 @@ export default function InvoiceItemsEditor({
         {compact
           ? "품목별로 아래 항목을 입력하세요. 옆으로 넘기지 않아도 모든 항목이 보입니다."
           : "표를 좌우로 밀어 입력하세요. 행의 +로 ERP 품목을 검색합니다."}{" "}
-        금액은 공급가액, 합계는 부가세 포함 금액입니다.
+        {items.some(item => item.priceOrigin === "ocr")
+          ? "사진의 인쇄값을 그대로 표시합니다. 부가세 포함 여부와 빈 금액은 원본을 확인해 주세요."
+          : "금액은 공급가액, 합계는 부가세 포함 금액입니다."}
       </Text>
       {compact ? (
         <View style={{ gap: 14 }}>

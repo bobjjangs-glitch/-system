@@ -1,19 +1,3 @@
-export type EcountConnection = {
-  configured: boolean;
-  missing: string[];
-  environment: string;
-  products: {
-    supported: boolean;
-    state: string;
-    lastReadAt: string | null;
-    count: number | null;
-    nextListAt: string;
-    listIntervalSeconds: number;
-    lastError: string | null;
-  };
-  customers: { supported: boolean; reason: string };
-  sales: { supported: boolean; reason: string };
-};
 export type CompanyErpConnection = {
   configured: boolean;
   apiUrl: string;
@@ -41,7 +25,7 @@ export type ErpStatus = {
   customers: number;
   products: number;
   salesDateFilter?: boolean;
-  direct?: EcountConnection;
+  automaticCompanyCatalogs?: boolean;
   company?: CompanyErpConnection;
 };
 export function readTime(value?: string | null) {

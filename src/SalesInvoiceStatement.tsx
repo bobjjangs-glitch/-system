@@ -99,6 +99,7 @@ export function InvoiceContents({ doc }: { doc: SalesDocument }) {
         {doc.saleDate} · {invoiceStatus(doc.status)} · 판매({channel})
         {pay ? " · " + pay : ""}
       </Text>
+      {!!doc.paymentAccount?.id && <Text selectable style={s.muted}>결제 계좌 · {doc.paymentAccount.name || `ERP 계좌 #${doc.paymentAccount.id}`} {doc.paymentAccount.kind ? `(${doc.paymentAccount.kind})` : ""}</Text>}
       {doc.saleDateInferred && (
         <Text style={{ color: C.amber }}>
           ERP 판매일자가 미등록되어 전표번호의 날짜를 표시합니다.
@@ -290,13 +291,15 @@ export default function SalesInvoiceStatement({
   doc,
   onClose,
   children,
+  title = "거래명세서 보기",
 }: {
+  title?: string;
   doc: SalesDocument | null;
   onClose: () => void;
   children?: React.ReactNode;
 }) {
   return (
-    <Sheet visible={!!doc} title="거래명세서 보기" onClose={onClose}>
+    <Sheet visible={!!doc} title={title} onClose={onClose}>
       {doc && (
         <>
           <InvoiceContents doc={doc} />

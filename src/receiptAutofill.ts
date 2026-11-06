@@ -28,11 +28,14 @@ export function mergeReceiptAutofill(
   if (!nonblank(original.notes) && nonblank(extracted.notes))
     set({ notes: extracted.notes.trim() });
 
+  if (original.amount == null && extracted.amount != null && Number.isFinite(extracted.amount) && extracted.amount >= 0) set({ amount: extracted.amount });
+
   const recognized = extracted.items.filter((item) => nonblank(item.name));
   if (!original.items.some((item) => nonblank(item.name))) {
     if (recognized.length)
       set({
         items: recognized.map((item) => ({
+          ...item,
           name: item.name.trim(),
           // Preserve what OCR actually extracted; do not invent a count of 1
           // when an invalid/missing count needs the administrator's attention.
@@ -42,15 +45,19 @@ export function mergeReceiptAutofill(
   } else {
     let changed = false;
     const items = original.items.map((item) => {
-      if (!nonblank(item.name) || positive(item.quantity)) return item;
-      const matches = recognized.filter(
-        (candidate) => itemName(candidate.name) === itemName(item.name),
-      );
-      // Several equal names may be separate lines/units. Never guess which
-      // quantity belongs to a manually entered item or combine those counts.
-      if (matches.length !== 1 || !positive(matches[0].quantity)) return item;
-      changed = true;
-      return { ...item, quantity: matches[0].quantity };
+      if (!nonblank(item.name)) return item;
+      const matches = recognized.filter(candidate => itemName(candidate.name) === itemName(item.name));
+      if (matches.length !== 1) return item;
+      const from = matches[0]; let next = item;
+      if (!positive(item.quantity) && positive(from.quantity)) next = { ...next, quantity: from.quantity };
+      for (const field of ["unitPrice", "supplyAmount", "totalAmount", "factoryPrice", "listPrice", "discountRate"] as const)
+        if (item[field] == null && from[field] != null && Number.isFinite(from[field]) && from[field]! >= 0)
+          next = { ...next, [field]: from[field] };
+      if (next !== item) {
+        changed = true;
+        if (from.priceOrigin === "ocr" && item.priceOrigin == null) next.priceOrigin = "ocr";
+      }
+      return next;
     });
     if (changed) set({ items });
   }

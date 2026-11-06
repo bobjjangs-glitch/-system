@@ -1,4 +1,4 @@
-/** ECOUNT YY means 2000–2099. Prefix date and sequence are separate identifiers. */
+/** Two-digit years mean 2000–2099; native SL prefixes and zero-padded sequences identify the same invoice. */
 export type SalesReference = {
   date: string;
   sequence: string;
@@ -30,7 +30,7 @@ export function parseSalesReference(value: unknown): SalesReference | null {
   const text = value.normalize("NFKC").replace(/\s+/g, "");
   const split = text.match(/^(.+?)[\-–—](\d{1,12})$/);
   if (!split) return null;
-  const date = readSalesDate(split[1]);
+  const date = readSalesDate(split[1].replace(/^SL-/i, ""));
   if (!date) return null;
   const sequence = split[2].replace(/^0+(?=\d)/, "");
   return {

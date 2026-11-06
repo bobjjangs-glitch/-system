@@ -257,7 +257,7 @@ export function searchCatalog(
       expr = `REPLACE(${expr},'${c}','')`;
     return store
       .all(
-        `SELECT * FROM catalog_products AS catalog WHERE ${expr} LIKE ? AND (source!='ecount' OR NOT EXISTS (SELECT 1 FROM catalog_products AS live WHERE live.code=catalog.code AND live.source='ecount-api')) ORDER BY (source='ecount-api') DESC,updatedAt DESC LIMIT 10000`,
+        `SELECT * FROM catalog_products AS catalog WHERE ${expr} LIKE ? AND source!='ecount-api' ORDER BY updatedAt DESC LIMIT 10000`,
         "%" + tire.compact + "%",
       )
       .filter((r) => productMatchesTireSize(r.name, r.specification, tire))
@@ -285,7 +285,7 @@ export function searchCatalog(
   ])
     searchExpression = `REPLACE(${searchExpression},'${character}','')`;
   const rows = store.all(
-    `SELECT * FROM ${tableName} AS catalog WHERE ${searchExpression} LIKE ? ESCAPE '\\' ${kind === "products" ? "AND (source!='ecount' OR NOT EXISTS (SELECT 1 FROM catalog_products AS live WHERE live.code=catalog.code AND live.source='ecount-api'))" : ""} ORDER BY (source='ecount-api') DESC,updatedAt DESC LIMIT 50`,
+    `SELECT * FROM ${tableName} AS catalog WHERE ${searchExpression} LIKE ? ESCAPE '\\' AND source!='ecount-api' ORDER BY updatedAt DESC LIMIT 50`,
     pattern,
   );
   if (kind === "customers" && rows.length < 30) {
@@ -504,7 +504,7 @@ export async function parseSalesExport(
       );
     const products = code
       ? store.all(
-          "SELECT * FROM catalog_products AS catalog WHERE code=? AND (source='ecount-api' OR (source='ecount' AND NOT EXISTS (SELECT 1 FROM catalog_products AS live WHERE live.code=catalog.code AND live.source='ecount-api')))",
+          "SELECT * FROM catalog_products AS catalog WHERE code=? AND source!='ecount-api' ORDER BY (source='company-erp') DESC,updatedAt DESC LIMIT 1",
           code,
         )
       : [];

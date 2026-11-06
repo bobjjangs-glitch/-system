@@ -77,7 +77,7 @@ function expectBuyer(value: ReceiptLayout) {
   assert.equal(result.draft.address, address);
   assert.equal(result.draft.phone, "041-000-0000");
   assert.deepEqual(result.draft.items, [
-    { name: "12R22.5,18L,152/149L_CN[AH15]", quantity: 2 },
+    { name: "12R22.5,18L,152/149L_CN[AH15]", quantity: 2, unitPrice: 368000, totalAmount: 736000, factoryPrice: 451000, priceOrigin: "ocr" },
   ]);
   return result;
 }

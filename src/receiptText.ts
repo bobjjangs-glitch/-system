@@ -1,4 +1,5 @@
 import type { Item, ShipmentInput } from "../server/types.ts";
+import { receiptRowMoney, receiptTextRowMoney, receiptTotal, checkReceiptMoney } from "./receiptMoney.ts";
 import { prepareTradeStatement } from "./tradeStatement.ts";
 
 export type ReceiptLayoutElement = {
@@ -591,7 +592,7 @@ function tableItems(atoms: Cell[]): Item[] {
     (cell) =>
       cell.y > table.qtyHeader.y + table.qtyHeader.height * 0.65 &&
       centerX(cell) >= nameLeft &&
-      centerX(cell) <= qtyRight,
+      centerX(cell) <= 1,
   );
   const rows: Cell[][] = [];
   for (const cell of data.sort(
@@ -630,10 +631,10 @@ function tableItems(atoms: Cell[]): Item[] {
       .map((cell) => quantity(cell.text))
       .filter((value): value is number => value !== null);
     if (!itemName(name)) continue;
-    result.push({
+    result.push(receiptRowMoney({
       name,
       quantity: quantities.length === 1 ? quantities[0] : 0,
-    });
+    }, row, columnHeaders));
   }
   return result;
 }
@@ -665,10 +666,10 @@ function textItems(lines: string[]): Item[] {
         Number(columns[2]) > 0 &&
         Number(columns[2]) <= 10000
       )
-        result.push({
+        result.push(receiptTextRowMoney({
           name: normalizeItemName(columns[1]),
           quantity: Number(columns[2]),
-        });
+        }, columns[3], columns[4]));
       continue;
     }
     if (!value || !itemName(value)) continue;
@@ -677,10 +678,10 @@ function textItems(lines: string[]): Item[] {
       /^(.+?)\s+(\d+(?:\.\d+)?)\s+(\d[\d,]*)\s+(\d[\d,]*)(?:\s+.*)?$/,
     );
     if (tableRow && hasTable) {
-      result.push({
+      result.push(receiptTextRowMoney({
         name: normalizeItemName(tableRow[1]),
         quantity: Number(tableRow[2]) <= 10000 ? Number(tableRow[2]) : 0,
-      });
+      }, tableRow[3], tableRow[4]));
       continue;
     }
     const trailing = value.match(
@@ -887,6 +888,11 @@ function inferQuantities(items: Item[], lines: string[]): boolean {
   if (exhausted || solutions.length !== 1) return false;
   items.forEach((item, index) => {
     if (!item.quantity) item.quantity = solutions[0][index].quantity;
+    if (item.unitPrice == null && item.totalAmount == null) {
+      item.unitPrice = solutions[0][index].unit;
+      item.totalAmount = solutions[0][index].amount;
+      item.priceOrigin = "ocr";
+    }
   });
   return true;
 }
@@ -1051,10 +1057,13 @@ export function extractReceipt(
   if (!recipientValue) warnings.push("배송받는 거래처를 확인해 주세요.");
   if (!address) warnings.push("배송받는 주소를 확인해 주세요.");
   if (!items.length) warnings.push("배송 물품을 확인해 주세요.");
+  const amount = receiptTotal(lines, positions.atoms, warnings);
+  checkReceiptMoney(items, amount, warnings);
   const draft: ShipmentInput = {
     recipient: recipientValue,
     address,
     phone,
+    ...(amount != null ? { amount } : {}),
     items: items.length ? items : [{ name: "", quantity: 1 }],
     notes: note,
     lat: null,
@@ -1065,6 +1074,7 @@ export function extractReceipt(
   if (draft.address) filledFields.push("address");
   if (draft.phone) filledFields.push("phone");
   if (items.length) filledFields.push("items");
+  if (amount != null) filledFields.push("amount");
   return { draft, warnings, filledFields };
 }
 export function parseReceipt(

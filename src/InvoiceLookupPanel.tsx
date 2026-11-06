@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import { api } from "./api";
 import { Button, Card, Field, C, s } from "./ui";
 import { InvoiceContents } from "./SalesInvoiceStatement";
-import { readTime, type ErpStatus } from "./ecountTypes";
+import { readTime, type ErpStatus } from "./erpTypes";
 import { validSalesDate } from "./salesReference";
 import type { SalesDocument, SalesList } from "./salesDocuments";
 export default function InvoiceLookupPanel({
@@ -115,7 +115,7 @@ export default function InvoiceLookupPanel({
     }
   };
   const ready =
-    !!status?.company?.configured && !!status.invoiceReferenceLookup;
+    !!status?.company?.configured && !!status.invoiceReferenceLookup && !!status.automaticCompanyCatalogs;
   return (
     <View style={{ gap: 14 }}>
       <Card>
@@ -125,7 +125,7 @@ export default function InvoiceLookupPanel({
           해당 전표를 직접 찾아 공급자·거래처·배송지·품목·금액 전체를
           보여줍니다.
         </Text>
-        {status && !status.invoiceReferenceLookup && (
+        {status && (!status.invoiceReferenceLookup || !status.automaticCompanyCatalogs) && (
           <Text style={{ color: C.amber, marginBottom: 12 }}>
             전표번호 직접 조회를 사용하려면 Node 서버와 ERP PHP 연동 파일을 최신
             버전으로 갱신해 주세요.

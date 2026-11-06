@@ -1,3 +1,4 @@
+import { deleteAdminRecord, ADMIN_DELETE_KINDS, type AdminDeleteKind } from "./adminDelete.ts";
 import {APP_VERSION,APP_REVISION} from "./buildInfo.ts";
 import { CompanySalesList } from "./companySalesList.ts";
 import express from "express";
@@ -47,9 +48,7 @@ import {
   searchCatalog,
   parseSalesExport, salesImportKeys, savedManualSale,
 } from "./erpCatalog.ts";
-import {
-  EcountReadClient, EcountReadError, type EcountReadDeps,
-} from "./ecountRead.ts";
+
 import { CompanySaleService } from "./companySale.ts";
 import { CompanyErpClient, CompanyErpError, type CompanyErpDeps } from "./companyErp.ts";
 import { seedDemo } from "./demo.ts";
@@ -95,7 +94,6 @@ export function createDispatchApp(
     roadRouting?: boolean;
     test?: boolean;
     autoGeocode?: boolean;
-    ecount?: EcountReadDeps;
     companyErp?: CompanyErpDeps;
   } = {},
 ) {
@@ -103,7 +101,6 @@ export function createDispatchApp(
     options.dataDir ?? process.env.APP_DATA_DIR ?? ".local",
   );
   const store = new Store(dataDir);
-  const ecount = new EcountReadClient(store, options.ecount);
   const companyErp = new CompanyErpClient(store, options.companyErp);
   const companySales = new CompanySaleService(store, companyErp, dataDir, (date) => {
     notify("changed");
@@ -754,20 +751,19 @@ export function createDispatchApp(
       "자료 종류를 확인해 주세요.",
     );
     res.json(
-      companyErp.status().configured
-        ? await companyErp.search(req.params.kind as "customers" | "products", typeof req.query.q === "string" ? req.query.q : "")
-        : searchCatalog(store, req.params.kind as "customers" | "products", typeof req.query.q === "string" ? req.query.q : ""),
+      await companyErp.search(req.params.kind as "customers" | "products", typeof req.query.q === "string" ? req.query.q : ""),
     );
   });
   app.get("/api/erp/status", admin, (_req, res) =>
     res.json({
-      mode: companyErp.status().configured ? "company-erp" : "ecount-api",
+      mode: "company-erp",
       company: companyErp.status(),
-      direct: ecount.status(),
       version:APP_VERSION,
       revision:APP_REVISION,
       invoiceReferenceLookup:true,
       salesInvoiceBrowser: true,
+      automaticCompanyCatalogs: true,
+      administratorDelete: true,
       salesDateFilter: true,
       regionalDispatch: true,
       customers: store.one("SELECT COUNT(*) AS n FROM catalog_customers").n,
@@ -795,12 +791,19 @@ export function createDispatchApp(
     assert(["customers", "products"].includes(String(req.params.kind)), "조회 항목을 확인해 주세요.");
     res.json(await companyErp.sync(req.params.kind as "customers" | "products"));
   });
+  app.post("/api/company-erp/catalog/refresh", admin, async (_req, res) =>
+    res.json(await companyErp.refreshCatalogs()),
+  );
   app.get("/api/company-erp/connection", admin, async (req, res) =>
     res.json({ version: APP_VERSION, ...await companyErp.connection(dateValue(req.query.date)) }),
   );
   app.get("/api/company-erp/invoices", admin, async (req, res) => {
     assert(typeof req.query.reference === "string", "전표번호를 입력해 주세요.", 400);
     res.json(await companyErp.invoice(req.query.reference));
+  });
+  app.post("/api/company-erp/sales/confirm-reference", admin, async (req, res) => {
+    assert(typeof req.body.reference === "string" && typeof req.body.fingerprint === "string", "확인할 ERP 전표를 선택해 주세요.",400);
+    res.status(201).json(await salesLists.confirmReference(req.body.reference,req.body.fingerprint,dateValue(req.body.serviceDate),req.body.delivery));
   });
   app.post("/api/company-erp/sales/reference-list", admin, async (req, res) => {
     assert(typeof req.body.reference === "string", "전표번호를 입력해 주세요.", 400);
@@ -843,23 +846,12 @@ export function createDispatchApp(
     notify("changed");
     res.status(201).json({...result, id:importId, fileName, serviceDate:date, rawText:"", status:"review"});
   });
-  app.post("/api/erp/products/sync", admin, async (_req, res) => {
-    res.json(await ecount.syncProducts());
-  });
-  app.get("/api/erp/products/lookup", admin, async (req, res) => {
-    res.json(await ecount.lookupProduct(req.query.code));
-  });
-  app.get("/api/erp/live/:kind", admin, (req, res) => {
-    assert(
-      ["customers", "sales"].includes(String(req.params.kind)),
-      "조회 항목을 확인해 주세요.", 404,
-    );
-    const status = ecount.status();
-    res.status(501).json({
-      error: req.params.kind === "customers" ? status.customers.reason : status.sales.reason,
-      code: "READ_API_UNAVAILABLE",
-    });
-  });
+  // Keep old clients from silently connecting to the removed provider.
+  for (const path of ["/api/erp/products/sync", "/api/erp/products/lookup", "/api/erp/live/:kind"]) {
+    app.all(path, admin, (_req, res) => res.status(410).json({
+      code: "INTEGRATION_REMOVED", error: "이전 ERP 연동은 종료했습니다. 회사 ERP 자동 조회를 사용해 주세요.",
+    }));
+  }
   app.post(
     "/api/erp/catalog/:kind/import",
     admin,
@@ -884,7 +876,7 @@ export function createDispatchApp(
     admin,
     upload.single("file"),
     async (req, res) => {
-      assert(req.file, "E카운트 판매조회 엑셀을 선택해 주세요.");
+      assert(req.file, "판매조회 엑셀을 선택해 주세요.");
       assert(req.body.salesDate===undefined||typeof req.body.salesDate==="string","판매조회 일자를 확인해 주세요.");
       const date = dateValue(req.body.serviceDate),
         file = req.file;
@@ -1221,6 +1213,16 @@ export function createDispatchApp(
     }
     res.status(201).json({ count });
   });
+  app.delete("/api/admin/records/:kind/:id", admin, async (req, res) => {
+    assert(ADMIN_DELETE_KINDS.includes(String(req.params.kind) as AdminDeleteKind), "삭제 항목을 확인해 주세요.", 404);
+    assert(!routingBusy, "배차 작업이 끝난 뒤 삭제해 주세요.", 409);
+    assert(req.body?.deleteLinked === undefined || typeof req.body.deleteLinked === "boolean", "삭제 범위를 확인해 주세요.",400);
+    routingBusy = true;
+    try {
+      const result = await deleteAdminRecord(store, dataDir, req.params.kind as AdminDeleteKind, String(req.params.id), req.body?.deleteLinked === true);
+      notify("changed"); res.json(result);
+    } finally { routingBusy = false; }
+  });
   app.delete("/api/imports/:id", admin, (req, res) => {
     const deleted = store.transaction(() => {
       const batch = store.one(
@@ -1234,7 +1236,7 @@ export function createDispatchApp(
         409,
       );
       assert(
-        ["review", "committed"].includes(batch.status) &&
+        ["review", "committed", "sales-list"].includes(batch.status) &&
           !store.one(
             "SELECT id FROM shipments WHERE importId=? AND (status<>'pending' OR routeId IS NOT NULL) LIMIT 1",
             batch.id,
@@ -1606,7 +1608,7 @@ export function createDispatchApp(
       const original = snapshot();
       assert(req.body.groupByRegion===undefined||typeof req.body.groupByRegion==="boolean","지역별 배차 설정을 확인해 주세요.");
       const estimated = await planDispatch(company, shipments, drivers, {
-        groupByRegion: req.body.groupByRegion===true,
+        groupByRegion: req.body.groupByRegion!==false,
         roadRouting: options.roadRouting !== false,
         trafficRequired: typeof req.body.trafficRequired === "boolean" ? req.body.trafficRequired : undefined,
         departureAt: req.body.departureAt,
@@ -2071,8 +2073,7 @@ export function createDispatchApp(
       res: Response,
       _next: NextFunction,
     ) => {
-      if (error instanceof EcountReadError || error instanceof CompanyErpError) {
-        if (error instanceof EcountReadError && error.retryAfter) res.set("Retry-After", String(error.retryAfter));
+      if (error instanceof CompanyErpError) {
         return res.status(error.status).json({ error: error.message, code: error.code });
       }
       if (error instanceof multer.MulterError)
@@ -2103,7 +2104,6 @@ export function createDispatchApp(
       closing = true;
       await companySales.close();
       await companyErp.close();
-      await ecount.close();
       clearInterval(liveTimer);
       await Promise.allSettled(addressJobs);
       await shutdownReceiptOcrPool();

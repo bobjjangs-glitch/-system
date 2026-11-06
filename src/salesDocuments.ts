@@ -16,8 +16,10 @@ export type SalesDocument = {
   status: "draft" | "confirmed" | "canceled";
   channel: string;
   paymentMethod: string;
+  paymentAccount?: { id: string; name: string; kind: string };
   customerName: string;
   customerCode: string;
+  erpCustomerId?: string;
   vehicleNo: string;
   cancelReason: string;
   deliveryAddress?: string;
@@ -60,6 +62,10 @@ export function documentShipment(doc: SalesDocument): ShipmentInput {
     items: doc.items,
     amount: doc.amount,
     customerCode: doc.customerCode,
+    ...(doc.erpCustomerId ? { erpCustomerId: doc.erpCustomerId } : {}),
+    invoiceCustomerName: doc.customerName,
+    invoiceVehicleNo: doc.vehicleNo,
+    ...(doc.channel === "retail" || doc.channel === "wholesale" ? { erpPriceChannel: doc.channel } : {}),
     salesReference: doc.reference,
     erpSourceKey: doc.sourceKey,
   };

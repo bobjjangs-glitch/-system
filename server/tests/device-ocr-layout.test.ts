@@ -98,6 +98,9 @@ test("기기 OCR 표의 위치로 품명·규격·수량을 채워 검토 내역
     assert.match(draft.items[0].name, /검증타이어/);
     assert.match(draft.items[0].name, /215\/55R17/);
     assert.equal(draft.items[0].quantity, 4);
+    assert.equal(draft.items[0].unitPrice, 90000);
+    assert.equal(draft.items[0].supplyAmount, 360000);
+    assert.equal(draft.items[0].priceOrigin, "ocr");
     assert.doesNotMatch(draft.items[0].name, /90000|360000/);
     const stored = f.runtime.store.one("SELECT rawText,drafts FROM imports WHERE id=?", result.data.id);
     assert.equal(stored.rawText, rawText);

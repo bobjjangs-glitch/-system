@@ -14,7 +14,7 @@ export type Item = {
   factoryPrice?: number | null;
   retailPrice?: number | null;
   wholesalePrice?: number | null;
-  priceOrigin?: "erp" | "manual";
+  priceOrigin?: "erp" | "manual" | "ocr";
   taxType?: "taxable" | "exempt";
   amountBasis?: "unit" | "supply" | "total";
   remarks?: string;

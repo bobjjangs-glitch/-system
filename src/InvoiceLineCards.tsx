@@ -18,6 +18,7 @@ export default function InvoiceLineCards({ items }: { items: Item[] }) {
         const fields = [
           ["품목코드", item.code || "미등록"],
           ["패턴", item.pattern || "미등록"],
+          ["과세 구분", item.taxType === "taxable" ? "과세" : item.taxType === "exempt" ? "면세" : "미등록"],
           [
             "수량",
             item.quantity.toLocaleString("ko-KR", {

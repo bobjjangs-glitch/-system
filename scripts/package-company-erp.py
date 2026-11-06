@@ -7,7 +7,7 @@ import zipfile
 root=pathlib.Path(__file__).resolve().parents[1]
 out=pathlib.Path(sys.argv[1] if len(sys.argv)>1 else '/workspace/artifacts/bareun-company-erp.zip')
 files=['dispatch_api.php','dispatch_setup.php','dispatch_sale.php','inc/dispatch_bridge.php','inc/dispatch_sales.php']
-readme='''바른배차 1.11.0 · 회사 닷홈 ERP 연결
+readme='''바른배차 1.12.0 · 회사 닷홈 ERP 연결
 
 ZIP의 tire/erp 폴더 구조를 FTP의 기존 tire/erp에 추가하세요.
 추가/교체 파일 5개: dispatch_api.php, dispatch_setup.php, dispatch_sale.php,
@@ -48,13 +48,16 @@ DC율 기준은 공장도가가 있으면 공장도가, 없으면 ERP 소매 기
 ERP 전표는 삭제되지 않습니다. 서버 APP_DATA_DIR은 반드시 영속 저장소로 운영하세요.
 무료 Render의 임시 파일/DB가 지워지면 저장 중 복구 기록도 사라질 수 있습니다.
 
-1.11 앱의 날짜별 조회는 ERP 판매일자와 전표번호 날짜를 함께 확인합니다.
+1.12 앱의 날짜별 조회는 ERP 판매일자와 전표번호 날짜를 함께 확인합니다.
 실제 날짜가 다르면 원본 판매일자를 보존해 따로 표시합니다.
 판매조회는 작성중·확정·취소·반품 전표를 목록으로 보여 줍니다.
 전표번호로 거래명세서를 열고 배송할 전표만 선택해 배차 대기에 넣습니다.
 취소·반품/0 이하 수량 전표는 배차하지 못합니다. 이전 1.9 앱은 기존 확정 전표 조회를 유지합니다. ERP 주소/연락처가 비어 있으면 검토 중 입력합니다.
 조회 결과를 검토하여 저장하기 전에는 배송지를 만들지 않습니다. 앱을 닫은 동안
-자동 등록하지 않습니다. 버튼/검색을 실행할 때마다 ERP를 조회합니다.
+자동 등록하지 않습니다. 거래처·품목은 전표 화면을 열면 자동 갱신됩니다.
+일자 조회 한 번으로 전체 판매목록을 읽고 전표번호를 누르면 최신 ERP 전체 내용을 채웁니다.
+확인하고 전표 등록 한 번으로 앱 배송 전표를 등록하며 ERP 판매·재고는 변경하지 않습니다.
+E카운트 직접 연동은 제거했습니다.
 
 요구 사항: 기존 ERP의 inc/bootstrap.php, inc/functions.php, inc/config.php와
 공개 erp 저장소의 테이블 구조(erp_partners, erp_items, erp_trades, erp_trade_lines).

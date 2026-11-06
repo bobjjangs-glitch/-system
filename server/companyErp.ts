@@ -624,6 +624,23 @@ export class CompanyErpClient {
       return liveItems;
     });
   }
+  private catalogSnapshots = new Map<CompanyCatalogKind, { count: number; updatedAt: string }>();
+  async refreshCatalogs() {
+    this.requireConfig();
+    const entries = await Promise.all((["customers", "products"] as const).map(async (kind) => {
+      const saved = this.catalogSnapshots.get(kind);
+      try {
+        const value = saved && this.now() - Date.parse(saved.updatedAt) < 60000
+          ? { ...saved, cached: true }
+          : await this.sync(kind);
+        return [kind, value] as const;
+      } catch (error) {
+        return [kind, { count: saved?.count ?? null, updatedAt: saved?.updatedAt ?? null,
+          error: error instanceof CompanyErpError ? error.message : "회사 ERP 목록을 불러오지 못했습니다." }] as const;
+      }
+    }));
+    return Object.fromEntries(entries);
+  }
   async sync(kind: CompanyCatalogKind) {
     return this.track(
       "sync-" + kind,
@@ -661,6 +678,7 @@ export class CompanyErpClient {
               );
           }
         });
+        this.catalogSnapshots.set(kind, { count: items.length, updatedAt: result.readAt });
         this.recordRead(kind, result.readAt, items.length);
         return { count: items.length, updatedAt: result.readAt, cached: false };
       },
@@ -870,7 +888,7 @@ export class CompanyErpClient {
     );
   }
   async invoice(reference: string) {
-    const input = reference.normalize("NFKC").trim();
+    const input = reference.normalize("NFKC").replace(/\s+/g, "");
     if (!/^[A-Za-z0-9][A-Za-z0-9./_-]{0,59}$/.test(input))
       throw new CompanyErpError(
         "REFERENCE",
@@ -946,7 +964,7 @@ export class CompanyErpClient {
     if (!validSalesDate(date))
       throw new CompanyErpError("DATE", "조회일자를 확인해 주세요.", 400);
     return this.track(
-      "connection-sales",
+      "connection-sales-" + date,
       async () => {
         const r = await this.page(
           "sales",
@@ -968,6 +986,7 @@ export class CompanyErpClient {
           date,
           matchedSales: (r as any).matchedSales ?? null,
           totalSales: (r as any).totalSales ?? null,
+          salesTable: (r as any).salesTable ?? null,
         };
       },
       true,

@@ -1,3 +1,4 @@
+import AdminDeleteButton from "./src/AdminDeleteButton";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -1478,12 +1479,7 @@ function Admin({
       if (batch.shipment) {
         const shipment = batch.shipment;
         const route = data?.routes.find((item) => item.id === shipment.routeId);
-        if (
-          !(shipment.status === "pending" && !shipment.routeId) &&
-          !(shipment.status === "assigned" && route?.status === "planned")
-        )
-          throw new Error("미배차 또는 출발 전 배송지만 삭제할 수 있습니다.");
-        await api("/api/shipments/" + shipment.id, { method: "DELETE" });
+        await api("/api/admin/records/shipments/" + shipment.id, { method: "DELETE" });
         receiptDeleteRef.current = null;
         reviewSaving.current = false;
         if (mounted.current) {
@@ -1510,14 +1506,14 @@ function Admin({
       if (remoteId) {
         try {
           const result = await api<{ ok: boolean; deletedShipments: number }>(
-            "/api/imports/" + remoteId,
-            { method: "DELETE" },
+            "/api/admin/records/imports/" + remoteId,
+            { method: "DELETE", body: JSON.stringify({ deleteLinked: batch.status === "committed" }) },
           );
           deletedShipments = result.deletedShipments;
         } catch (error) {
           // A lost successful response or an earlier cleanup failure can leave
           // an owned local draft referring to an already deleted server upload.
-          if ((error as Error).message !== "업로드를 찾을 수 없습니다.")
+          if (!["업로드를 찾을 수 없습니다.", "삭제할 앱 기록을 찾을 수 없습니다."].includes((error as Error).message))
             throw error;
         }
       }
@@ -1546,7 +1542,7 @@ function Admin({
       setReviewError("");
       tell(
         deletedShipments
-          ? `전표 1건과 미배차 배송지 ${deletedShipments}곳을 삭제했습니다.`
+          ? `전표 1건과 연결된 배송지 ${deletedShipments}곳을 삭제했습니다.`
           : "전표 1건을 삭제했습니다.",
       );
       refresh().catch(() => {});
@@ -2052,13 +2048,7 @@ function Admin({
               onSalesList={setSalesBrowserId}
               date={date}
               disabled={busy || !!uploadProgress || !!review}
-              onReview={(batch) => {
-                if (!reviewRef.current && !uploadRef.current) {
-                  reviewRef.current = batch;
-                  setReview(batch);
-                  refresh().catch(() => {});
-                }
-              }}
+
             />
             {deviceDrafts.length > 0 && (
               <>
@@ -2370,6 +2360,7 @@ function Admin({
                     </View>
                   </View>
                   {routeStatus(route)}
+                  <AdminDeleteButton kind="routes" id={route.id} name={`${route.driverName} 코스`} disabled={busy} onDeleted={() => { refresh().catch((e) => tell(e.message)); }} />
                 </View>
                 <View style={[s.row, { marginTop: 12, marginBottom: 16 }]}>
                   <Badge text="회사 왕복 포함" />
@@ -2568,6 +2559,7 @@ function Admin({
                     }
                   />
                 </View>
+                <View style={{ marginVertical: 10 }}><AdminDeleteButton kind="drivers" id={driver.id} name={driver.name} disabled={busy} onDeleted={() => { refresh().catch((e) => tell(e.message)); }} /></View>
                 <View style={s.row}>
                   <View style={{ flex: 1 }}>
                     <Button
@@ -3114,6 +3106,7 @@ function Admin({
         )}
       </Sheet>
       <CompanySalesBrowser
+        onRecommend={(value) => { setSalesBrowserId(null); setDate(value); setTab("routes"); void run(async () => { await post("/api/routes/optimize", { serviceDate: value, groupByRegion: true }); await refresh(); }); }}
         batchId={salesBrowserId}
         onClose={() => setSalesBrowserId(null)}
         onFindInvoice={() => {
@@ -3709,10 +3702,7 @@ function Admin({
                 </View>
               </>
             )}
-            {((detail.status === "pending" && !detail.routeId) ||
-              (detail.status === "assigned" &&
-                data.routes.find((route) => route.id === detail.routeId)
-                  ?.status === "planned")) && (
+            {(
               <View style={{ marginTop: 20 }}>
                 <Button
                   title="이 배송지 삭제"
@@ -3781,19 +3771,17 @@ function Admin({
             <Text style={[s.muted, { marginBottom: 14 }]}>
               {receiptDelete.shipment
                 ? receiptDelete.shipment.routeId
-                  ? "출발 전 코스에서 배송지 1곳을 삭제하고 남은 경로와 예상 시간을 다시 계산합니다. 업로드한 전표 원본과 다른 배송지는 보관됩니다."
+                  ? "배송지 1곳을 삭제하고 남은 코스를 갱신합니다. 운행 중인 기사 화면에도 반영됩니다. 업로드한 원본과 다른 배송지는 보관됩니다."
                   : "미배차 배송지 1곳을 삭제합니다. 업로드한 전표 원본과 다른 배송지는 보관됩니다."
                 : receiptDelete.status === "committed"
-                  ? `전표 1건과 연결된 미배차 배송지 최대 ${receiptDelete.count ?? receiptDelete.drafts.length}곳을 함께 삭제합니다.`
+                  ? `전표 1건과 연결된 배송지 최대 ${receiptDelete.count ?? receiptDelete.drafts.length}곳을 함께 삭제합니다. 배차·완료 내역에도 반영됩니다.`
                   : receiptDelete.id
-                    ? "전표 1건의 업로드 원본과 검토 내역을 삭제합니다."
+                    ? "이 조회 기록의 JSON·사진 원본과 검토 내역을 삭제합니다. ERP 원본은 유지됩니다."
                     : "기기에 보관한 전표 1건과 앱 전용 사진 복사본을 삭제합니다. 휴대폰 갤러리의 원본은 보관됩니다."}
             </Text>
             {(receiptDelete.id || receiptDelete.shipment) && (
               <Text style={[s.muted, { marginBottom: 14 }]}>
-                {receiptDelete.shipment
-                  ? "운행 중이거나 배송 처리한 배송지는 삭제할 수 없습니다."
-                  : "배차·운행·배송 처리한 내역은 삭제할 수 없습니다."}
+                관리자 권한으로 앱 기록을 삭제합니다. ERP 원본 판매전표와 재고는 변경하지 않습니다.
               </Text>
             )}
             <Text style={{ color: C.red, marginBottom: 18 }}>

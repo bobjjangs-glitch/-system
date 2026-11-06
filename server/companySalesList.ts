@@ -69,6 +69,17 @@ export class CompanySalesList {
       serviceDate,
     );
   }
+  async confirmReference(reference: string, fingerprint: string, serviceDate: string, delivery?: unknown) {
+    if (!/^[a-f0-9]{64}$/.test(fingerprint) || !validSalesDate(serviceDate))
+      failure("확인할 전표와 배송일을 확인해 주세요.",400);
+    const result = await this.erp.invoice(reference);
+    if (result.document.fingerprint !== fingerprint)
+      failure("ERP 전표가 확인 중 변경되었습니다. 전표번호를 다시 눌러 최신 내용을 확인해 주세요.");
+    const list = this.persistList({ documents: [result.document], salesDate: parseSalesReference(reference)?.date ?? result.document.saleDate,
+      sourceReadAt: result.sourceReadAt }, serviceDate);
+    return this.dispatch(list.id, { sourceKeys: [result.document.sourceKey], serviceDate,
+      deliveryOverrides: delivery ? { [result.document.sourceKey]: delivery } : {} });
+  }
   private persistList(
     result: {
       documents: SalesDocument[];

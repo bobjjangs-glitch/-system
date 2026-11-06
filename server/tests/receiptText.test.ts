@@ -86,14 +86,15 @@ test("블록 순서가 섞인 거래명세서에서 공급자 대신 거래처�
   );
   assert.equal(result.draft.phone, "010-0000-0000");
   assert.deepEqual(result.draft.items, [
-    { name: "195/75R16,12L,113/111M[DH15]", quantity: 3 },
-    { name: "195/70R15,8L,104/102R_CN[밴트라 트랜짓 - RA58C]", quantity: 2 },
+    { name: "195/75R16,12L,113/111M[DH15]", quantity: 3, unitPrice: 134000, totalAmount: 402000, priceOrigin: "ocr" },
+    { name: "195/70R15,8L,104/102R_CN[밴트라 트랜짓 - RA58C]", quantity: 2, unitPrice: 86000, totalAmount: 172000, priceOrigin: "ocr" },
   ]);
   assert.deepEqual(result.filledFields, [
     "recipient",
     "address",
     "phone",
     "items",
+    "amount",
   ]);
   assert.match(result.warnings.join(" "), /계산/);
   assert.doesNotMatch(result.draft.address, /공급로|예시동/);
@@ -121,8 +122,8 @@ test("텍스트 표의 복수 품목을 읽고 열 제목과 합계는 물품으
     "품명 수량 단가 금액\n생수 2 1,500 3,000\n쌀 3 10,000 30,000\n합계 5 33,000",
   );
   assert.deepEqual(row.items, [
-    { name: "생수", quantity: 2 },
-    { name: "쌀", quantity: 3 },
+    { name: "생수", quantity: 2, unitPrice: 1500, supplyAmount: 3000, priceOrigin: "ocr" },
+    { name: "쌀", quantity: 3, unitPrice: 10000, supplyAmount: 30000, priceOrigin: "ocr" },
   ]);
 });
 
@@ -131,8 +132,8 @@ test("같은 규격의 서로 다른 전표 행을 보존하고 라벨 다음 �
     "품명 수량 단가 금액\n195/75R16 2 134,000 268,000\n195/75R16 3 134,000 402,000",
   );
   assert.deepEqual(row.items, [
-    { name: "195/75R16", quantity: 2 },
-    { name: "195/75R16", quantity: 3 },
+    { name: "195/75R16", quantity: 2, unitPrice: 134000, supplyAmount: 268000, priceOrigin: "ocr" },
+    { name: "195/75R16", quantity: 3, unitPrice: 134000, supplyAmount: 402000, priceOrigin: "ocr" },
   ]);
   assert.deepEqual(parseReceipt("품목\n195/75R16 2본").items, [
     { name: "195/75R16", quantity: 2 },
@@ -220,8 +221,8 @@ test("위치 좌표로 품명·규격·수량 열을 묶고 가격과 합계를 
     tableLayout(),
   );
   assert.deepEqual(row.items, [
-    { name: "검증타이어 215/55R17", quantity: 4 },
-    { name: "겨울타이어 195/65R15", quantity: 2 },
+    { name: "검증타이어 215/55R17", quantity: 4, unitPrice: 90000, supplyAmount: 360000, priceOrigin: "ocr" },
+    { name: "겨울타이어 195/65R15", quantity: 2, unitPrice: 80000, supplyAmount: 160000, priceOrigin: "ocr" },
   ]);
   const absolute = tableLayout();
   absolute.lines = absolute.lines.map((line) => ({
@@ -273,6 +274,6 @@ test("네이티브 단어 좌표가 제공되면 한 줄 안에서도 수량 열
     ],
   };
   assert.deepEqual(parseReceipt("", layout).items, [
-    { name: "검증타이어 215/55R17", quantity: 4 },
+    { name: "검증타이어 215/55R17", quantity: 4, unitPrice: 90000, supplyAmount: 360000, priceOrigin: "ocr" },
   ]);
 });
