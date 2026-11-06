@@ -101,10 +101,14 @@ import RegionalDispatchSummary from "./src/RegionalDispatchSummary";
 import { deliveryRegion, deliveryRegionGroups } from "./src/deliveryRegion";
 import { parseSalesReference } from "./src/salesReference";
 import CatalogPicker from "./src/CatalogPicker";
+import { invoiceProduct, invoiceCustomer } from "./src/invoiceCatalog";
 import InvoiceItemsEditor from "./src/InvoiceItemsEditor";
+import CompanySalesBrowser from "./src/CompanySalesBrowser";
+import SalesInvoiceStatement from "./src/SalesInvoiceStatement";
+import type { SalesDocument } from "./src/salesDocuments";
 import ErpSaleIdentity from "./src/ErpSaleIdentity";
 import PendingErpSales from "./src/PendingErpSales";
-import { calculateInvoiceLine, invoiceTotals } from "./src/invoiceMath";
+import { invoiceTotals } from "./src/invoiceMath";
 import ErpImportPanel from "./src/ErpImportPanel";
 import DispatchBoardScreen from "./src/DispatchBoardScreen";
 import type { BoardDrop } from "./src/dispatchBoardTypes";
@@ -188,6 +192,8 @@ type Dashboard = {
   };
 };
 type ImportBatch = {
+  source?: string;
+  documents?: SalesDocument[];
   erpSaleRequestId?: string;
   erpSaleLocked?: boolean;
   erpWriteReady?: boolean;
@@ -721,6 +727,9 @@ function Admin({
     phase: string;
     startedAt: number;
   } | null>(null);
+  const [salesBrowserId, setSalesBrowserId] = useState<string | null>(null);
+  const [invoiceStatement, setInvoiceStatement] =
+    useState<SalesDocument | null>(null);
   const [reviewError, setReviewError] = useState("");
   const [receiptDelete, setReceiptDelete] =
     useState<ReceiptDeleteTarget | null>(null);
@@ -1151,6 +1160,13 @@ function Admin({
           "전표 결과를 읽지 못했습니다. 업로드 내역에서 확인해 주세요.",
         );
       if (!operation.controller.signal.aborted && mounted.current) {
+        if (
+          batch.source === "company-erp-selection" ||
+          batch.documents?.length
+        ) {
+          setSalesBrowserId(batch.id!);
+          return;
+        }
         const recognized = withReceiptRecognition(batch);
         reviewRef.current = recognized;
         setReview(recognized);
@@ -1193,12 +1209,29 @@ function Admin({
       return;
     }
     const batch = await api<ImportBatch>("/api/imports/" + id);
+    if (batch.source === "company-erp" && !batch.documents?.length) {
+      const salesDate = parseSalesReference(
+        batch.drafts[0]?.salesReference,
+      )?.date;
+      if (salesDate) {
+        const result = await post("/api/company-erp/sales/lists", {
+          salesDate,
+          serviceDate: batch.serviceDate,
+        });
+        setSalesBrowserId(result.id);
+        return;
+      }
+    }
     if (
       mounted.current &&
       !uploadRef.current &&
       !reviewSaving.current &&
       !receiptDeleteRef.current
     ) {
+      if (batch.source === "company-erp-selection" || batch.documents?.length) {
+        setSalesBrowserId(batch.id!);
+        return;
+      }
       const recognized = withReceiptRecognition(batch);
       reviewRef.current = recognized;
       setReview(recognized);
@@ -2010,6 +2043,7 @@ function Admin({
               }
             />
             <ErpImportPanel
+              onSalesList={setSalesBrowserId}
               date={date}
               disabled={busy || !!uploadProgress || !!review}
               onReview={(batch) => {
@@ -2586,19 +2620,59 @@ function Admin({
                     <Text style={s.h3}>{batch.fileName}</Text>
                     <Text style={s.muted}>
                       {batch.serviceDate} ·{" "}
-                      {batch.status === "committed"
-                        ? `${batch.count}곳 등록`
-                        : "검토 대기"}
+                      {batch.status === "sales-list"
+                        ? `${batch.count}건 판매조회 목록`
+                        : batch.status === "committed"
+                          ? `${batch.count}곳 등록`
+                          : "검토 대기"}
                     </Text>
                   </View>
                   <Badge
                     text={
-                      batch.status === "committed" ? "등록 완료" : "확인 필요"
+                      batch.status === "sales-list"
+                        ? "판매조회 목록"
+                        : batch.status === "committed"
+                          ? "등록 완료"
+                          : "확인 필요"
                     }
                     tone={batch.status === "committed" ? "green" : "amber"}
                   />
                 </View>
                 <View style={[s.row, { marginTop: 13, flexWrap: "wrap" }]}>
+                  {(batch.status === "sales-list" ||
+                    batch.source?.startsWith("company-erp")) && (
+                    <Button
+                      title="판매전표·명세서 보기"
+                      small
+                      secondary
+                      onPress={() =>
+                        run(async () => {
+                          const row = await api<ImportBatch>(
+                            "/api/imports/" + batch.id,
+                          );
+                          if (
+                            row.documents?.length ||
+                            row.source === "company-erp-selection"
+                          )
+                            setSalesBrowserId(batch.id!);
+                          else {
+                            const shipment = data.shipments.find(
+                              (s) => s.importId === batch.id,
+                            );
+                            if (!shipment)
+                              throw new Error(
+                                "배송지 상세에서 명세서를 확인해 주세요.",
+                              );
+                            setInvoiceStatement(
+                              await api<SalesDocument>(
+                                "/api/shipments/" + shipment.id + "/invoice",
+                              ),
+                            );
+                          }
+                        })
+                      }
+                    />
+                  )}
                   {batch.status === "review" && (
                     <Button
                       title="내용 확인"
@@ -2835,6 +2909,35 @@ function Admin({
                     판매전표 {row.salesReference}
                   </Text>
                 )}
+                {review.erpSaleRequestId && (
+                  <>
+                    <Text style={[s.muted, { marginBottom: 12 }]}>
+                      판매구분 ·{" "}
+                      {row.erpPriceChannel === "retail"
+                        ? "소매"
+                        : row.erpPriceChannel === "wholesale"
+                          ? "도매"
+                          : "거래처 선택 후 확인"}{" "}
+                      (ERP 거래처 기본 구분)
+                    </Text>
+                    <Field
+                      label="고객명"
+                      value={row.invoiceCustomerName ?? ""}
+                      onChangeText={(invoiceCustomerName) =>
+                        updateReview(index, { invoiceCustomerName })
+                      }
+                      editable={!review.erpSaleLocked}
+                    />
+                    <Field
+                      label="차량번호"
+                      value={row.invoiceVehicleNo ?? ""}
+                      onChangeText={(invoiceVehicleNo) =>
+                        updateReview(index, { invoiceVehicleNo })
+                      }
+                      editable={!review.erpSaleLocked}
+                    />
+                  </>
+                )}
                 <View style={{ marginBottom: 12 }}>
                   <Button
                     title="거래처 검색"
@@ -3017,6 +3120,18 @@ function Admin({
           </>
         )}
       </Sheet>
+      <CompanySalesBrowser
+        batchId={salesBrowserId}
+        onClose={() => setSalesBrowserId(null)}
+        onSaved={(value) => {
+          setDate(value);
+          refresh().catch((e) => tell(e.message));
+        }}
+      />
+      <SalesInvoiceStatement
+        doc={invoiceStatement}
+        onClose={() => setInvoiceStatement(null)}
+      />
       <CatalogPicker
         kind={catalogTarget?.kind ?? null}
         onClose={() => setCatalogTarget(null)}
@@ -3025,39 +3140,19 @@ function Admin({
           const row = reviewRef.current.drafts[catalogTarget.row];
           if (!row) return;
           if (catalogTarget.kind === "customers")
+            updateReview(catalogTarget.row, invoiceCustomer(row, entry));
+          else {
+            const items = row.items.map((item, i) =>
+              i === catalogTarget.item
+                ? invoiceProduct(item, entry, row.erpPriceChannel)
+                : item,
+            );
+            const totals = invoiceTotals(items);
             updateReview(catalogTarget.row, {
-              recipient: entry.name,
-              address: entry.address ?? "",
-              phone: entry.phone ?? "",
-              customerCode: entry.code,
-              erpCustomerId: entry.remoteId,
-              lat: null,
-              lng: null,
+              items,
+              ...(totals.complete ? { amount: totals.total } : {}),
             });
-          else
-            updateReview(catalogTarget.row, {
-              items: row.items.map((item, i) =>
-                i === catalogTarget.item
-                  ? calculateInvoiceLine({
-                      ...item,
-                      name:
-                        entry.name +
-                        (entry.specification &&
-                        !entry.name.includes(entry.specification)
-                          ? " " + entry.specification
-                          : ""),
-                      code: entry.code,
-                      erpItemId: entry.remoteId,
-                      specification: entry.specification,
-                      pattern: entry.pattern,
-                      unitPrice: entry.unitPrice ?? null,
-                      listPrice: entry.listPrice ?? null,
-                      taxType: entry.taxType ?? "taxable",
-                      amountBasis: "unit",
-                    })
-                  : item,
-              ),
-            });
+          }
           Keyboard.dismiss();
           setCatalogTarget(null);
         }}
@@ -3511,6 +3606,23 @@ function Admin({
               <Text style={[s.muted, { marginTop: 8 }]}>{detail.phone}</Text>
             )}
             <View style={s.divider} />
+            {detail.salesReference && (
+              <View style={{ marginVertical: 12 }}>
+                <Button
+                  title="거래명세서 보기"
+                  secondary
+                  onPress={() =>
+                    run(async () =>
+                      setInvoiceStatement(
+                        await api<SalesDocument>(
+                          "/api/shipments/" + detail.id + "/invoice",
+                        ),
+                      ),
+                    )
+                  }
+                />
+              </View>
+            )}
             <Text style={[s.h3, { marginBottom: 15 }]}>배송 물품</Text>
             {detail.amount != null && (
               <Text style={[s.h3, { marginVertical: 12 }]}>

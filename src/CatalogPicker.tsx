@@ -46,12 +46,31 @@ function CatalogRow({
       ) : (
         <>
           <Text style={s.muted}>{row.specification}</Text>
-          {row.unitPrice != null && (
+          {row.retailPrice != null && (
             <Text style={s.muted}>
-              참고 단가 {row.unitPrice.toLocaleString()}원 · 전표 금액은 별도
-              확인
+              소매 단가 {row.retailPrice.toLocaleString()}원
             </Text>
           )}
+          {row.wholesalePrice != null && (
+            <Text style={s.muted}>
+              도매 단가 {row.wholesalePrice.toLocaleString()}원
+            </Text>
+          )}
+          {row.factoryPrice != null && (
+            <Text style={s.muted}>
+              공장도가 {row.factoryPrice.toLocaleString()}원
+            </Text>
+          )}
+          {row.retailPrice == null &&
+            row.wholesalePrice == null &&
+            row.unitPrice != null && (
+              <Text style={s.muted}>
+                단가 {row.unitPrice.toLocaleString()}원
+              </Text>
+            )}
+          <Text style={s.muted}>
+            선택하면 수량에 맞춰 단가·금액·합계를 자동 입력합니다.
+          </Text>
         </>
       )}
     </Pressable>

@@ -28,7 +28,7 @@ if (is_post()) {
             @unlink($tmp); throw new RuntimeException();
         }
         $shown = $token;
-    } catch (Throwable $e) { $error = '연동키를 저장하지 못했습니다. inc 폴더의 PHP 쓰기 권한을 호스팅 관리자에서 확인해 주세요.'; }
+    } catch (Throwable $e) { $error = !empty($enabling) ? '앱 판매 저장소를 준비하지 못했습니다. DB CREATE/ALTER 권한과 inc 폴더 쓰기 권한을 확인해 주세요.' : '연동키를 저장하지 못했습니다. inc 폴더의 PHP 쓰기 권한을 호스팅 관리자에서 확인해 주세요.'; }
 }
 ?>
 <!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>배차 앱 연결</title>

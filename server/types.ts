@@ -11,6 +11,10 @@ export type Item = {
   totalAmount?: number | null;
   discountRate?: number | null;
   listPrice?: number | null;
+  factoryPrice?: number | null;
+  retailPrice?: number | null;
+  wholesalePrice?: number | null;
+  priceOrigin?: "erp" | "manual";
   taxType?: "taxable" | "exempt";
   amountBasis?: "unit" | "supply" | "total";
   remarks?: string;
@@ -26,6 +30,9 @@ export type ShipmentInput = {
   amount?: number | null;
   customerCode?: string;
   erpCustomerId?: string;
+  invoiceCustomerName?: string;
+  invoiceVehicleNo?: string;
+  erpPriceChannel?: "retail" | "wholesale";
   salesReference?: string;
   erpSourceKey?: string;
 };

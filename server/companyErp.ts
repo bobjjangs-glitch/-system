@@ -1,3 +1,5 @@
+import { normalizeSalesDocument } from "./salesDocuments.ts";
+import { documentShipment } from "../src/salesDocuments.ts";
 import { createHash } from "node:crypto";
 import type { Store } from "./database.ts";
 import type { ShipmentInput } from "./types.ts";
@@ -23,6 +25,10 @@ export type CompanyErpDeps = {
 export type CompanyCatalogKind = "customers" | "products";
 export type CompanyCatalogEntry = {
   id: string;
+  defaultChannel?: "retail" | "wholesale";
+  retailPrice?: number | null;
+  wholesalePrice?: number | null;
+  factoryPrice?: number | null;
   remoteId?: string;
   pattern?: string;
   taxType?: "taxable" | "exempt";
@@ -38,6 +44,8 @@ export type CompanyCatalogEntry = {
 };
 type Kind = CompanyCatalogKind | "sales";
 type Page = {
+  scope?: string;
+  invoiceVersion?: number;
   instanceId: string;
   snapshot: string;
   total: number;
@@ -367,7 +375,7 @@ export class CompanyErpClient {
       this.controllers.delete(controller);
     }
   }
-  private async all(kind: Kind, date?: string) {
+  private async all(kind: Kind, date?: string, scope?: string) {
     const deadline = this.now() + 45000;
     let cursor = "0",
       snapshot = "",
@@ -382,10 +390,20 @@ export class CompanyErpClient {
           cursor,
           limit: kind === "sales" ? "50" : "500",
           ...(date ? { date } : {}),
+          ...(scope ? { scope } : {}),
           ...(snapshot ? { snapshot } : {}),
         },
         deadline,
       );
+      if (
+        scope === "all" &&
+        (result.scope !== "all" || result.invoiceVersion !== 1)
+      )
+        throw new CompanyErpError(
+          "INVOICE_VERSION",
+          "ERP 판매목록·명세서 조회에는 최신 ERP 연동 파일이 필요합니다. PHP 5개와 Node 서버를 함께 업데이트해 주세요.",
+          502,
+        );
       if (
         total >= 0 &&
         (result.total !== total ||
@@ -443,6 +461,8 @@ export class CompanyErpClient {
       ? {
           id,
           remoteId: row.id,
+          defaultChannel:
+            row.defaultChannel === "retail" ? "retail" : "wholesale",
           code,
           name,
           address: text(row.address ?? "", 500),
@@ -457,6 +477,12 @@ export class CompanyErpClient {
           name,
           pattern: text(row.pattern ?? "", 80),
           taxType: row.taxType === "exempt" ? "exempt" : "taxable",
+          retailPrice:
+            row.retailPrice == null ? null : this.price(row.retailPrice),
+          wholesalePrice:
+            row.wholesalePrice == null ? null : this.price(row.wholesalePrice),
+          factoryPrice:
+            row.factoryPrice == null ? null : this.price(row.factoryPrice),
           listPrice: row.listPrice == null ? null : this.price(row.listPrice),
           specification: text(row.specification ?? "", 200),
           unitPrice: this.price(row.unitPrice),
@@ -703,6 +729,49 @@ export class CompanyErpClient {
           duplicateDocuments: duplicate,
           sourceCount: result.items.length,
         };
+      },
+      true,
+    );
+  }
+  async browseSales(date: string) {
+    return this.track(
+      "browse-sales-" + date,
+      async () => {
+        if (!validSalesDate(date))
+          throw new CompanyErpError("DATE", "판매일자를 확인해 주세요.", 400);
+        const result = await this.all("sales", date, "all");
+        if (result.items.length > 2000)
+          throw new CompanyErpError(
+            "LIMIT",
+            "하루 최대 2,000개 전표를 조회할 수 있습니다.",
+          );
+        const documents = result.items.map((row) => {
+          const doc = normalizeSalesDocument(
+            row,
+            this.url,
+            result.instanceId,
+            date,
+          );
+          const draft = documentShipment(doc);
+          const registered =
+            salesImportKeys(draft).some((key) =>
+              this.store.one(
+                "SELECT sourceKey FROM erp_sales_links WHERE sourceKey=?",
+                key,
+              ),
+            ) || savedManualSale(this.store, draft);
+          return {
+            ...doc,
+            registered,
+            eligible: doc.eligible && !registered,
+            reason: registered
+              ? "이미 배차 대기에 등록한 전표입니다."
+              : doc.reason,
+          };
+        });
+        this.reads.sales = { at: result.readAt, count: documents.length };
+        this.lastError = null;
+        return { documents, salesDate: date, sourceReadAt: result.readAt };
       },
       true,
     );

@@ -9,7 +9,7 @@ import {
   invoiceTotals,
 } from "./invoiceMath";
 import { Button, C, s } from "./ui";
-const columns = [36, 34, 118, 240, 145, 76, 100, 110, 110, 130, 78];
+const columns = [36, 44, 118, 240, 145, 76, 100, 110, 110, 130, 110, 78];
 function Cell({
   label,
   value,
@@ -88,7 +88,8 @@ export default function InvoiceItemsEditor({
       | "unitPrice"
       | "supplyAmount"
       | "totalAmount"
-      | "discountRate",
+      | "discountRate"
+      | "factoryPrice",
     text: string,
   ) => set(i, changeInvoiceNumber(items[i], key, numberInput(text)));
   const headers = [
@@ -101,7 +102,8 @@ export default function InvoiceItemsEditor({
     "단가",
     "금액",
     "합계",
-    "비고",
+    "적요",
+    "공장도가",
     "DC율",
   ];
   return (
@@ -293,6 +295,14 @@ export default function InvoiceItemsEditor({
                 readOnly={disabled}
               />,
               <Cell
+                key="factory"
+                label={`공장도가 ${i + 1}`}
+                value={money(item.factoryPrice)}
+                onChange={(v) => numeric(i, "factoryPrice", v)}
+                numeric
+                readOnly={disabled}
+              />,
+              <Cell
                 key="dc"
                 label={`DC율 ${i + 1}`}
                 value={
@@ -368,8 +378,9 @@ export default function InvoiceItemsEditor({
         />
       </View>
       <Text style={s.muted}>
-        DC율을 바꾸면 ERP 기준가(소매가)에 할인율을 적용합니다. 기준가가 없으면
-        단가를 직접 입력하세요.
+        품목 선택 시 ERP 거래처의 소매·도매 구분에 맞는 단가와 금액을 채웁니다.
+        DC율은 공장도가가 있으면 공장도가, 없으면 ERP 기준가(소매가)에
+        적용합니다. 공장도가가 없는 품목은 입력할 수 있습니다.
       </Text>
       <View
         style={{

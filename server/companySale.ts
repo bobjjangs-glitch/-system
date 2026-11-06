@@ -1,3 +1,4 @@
+import { normalizeSalesDocument } from "./salesDocuments.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
@@ -297,7 +298,23 @@ export class CompanySaleService {
           JSON.stringify([row]),
           sale.saleDate,
           at,
-          JSON.stringify({ source: "company-erp-created", requestId: id }),
+          JSON.stringify({
+            source: "company-erp-created",
+            requestId: id,
+            ...(sale.supplier
+              ? {
+                  documents: [
+                    normalizeSalesDocument(
+                      sale,
+                      remote.sourceUrl,
+                      remote.instanceId,
+                      sale.saleDate,
+                    ),
+                  ],
+                  sourceReadAt: at,
+                }
+              : {}),
+          }),
         );
         this.store.run(
           "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

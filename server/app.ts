@@ -1,3 +1,4 @@
+import { CompanySalesList } from "./companySalesList.ts";
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -104,6 +105,10 @@ export function createDispatchApp(
   const ecount = new EcountReadClient(store, options.ecount);
   const companyErp = new CompanyErpClient(store, options.companyErp);
   const companySales = new CompanySaleService(store, companyErp, dataDir, (date) => {
+    notify("changed");
+    scheduleAddressLookup(date);
+  });
+  const salesLists = new CompanySalesList(store, companyErp, dataDir, (date) => {
     notify("changed");
     scheduleAddressLookup(date);
   });
@@ -724,7 +729,7 @@ export function createDispatchApp(
     const date = req.query.date ? dateValue(req.query.date) : null;
     res.json(
       store.all(
-        `SELECT id,fileName,mime,status,serviceDate,createdAt,count FROM imports ${date ? "WHERE serviceDate=?" : ""} ORDER BY createdAt DESC LIMIT 200`,
+        `SELECT id,fileName,mime,status,serviceDate,createdAt,count,json_extract(meta,'$.source') AS source FROM imports ${date ? "WHERE serviceDate=?" : ""} ORDER BY createdAt DESC LIMIT 200`,
         ...(date ? [date] : []),
       ),
     );
@@ -734,6 +739,8 @@ export function createDispatchApp(
     assert(row, "업로드를 찾을 수 없습니다.", 404);
     res.json({
       ...row,
+      source: JSON.parse(row.meta || "{}").source,
+      documents: JSON.parse(row.meta || "{}").documents,
       drafts: JSON.parse(row.drafts),
       recognitionWarnings: JSON.parse(row.meta || "{}").warnings ?? [],
       storedName: undefined,
@@ -756,6 +763,7 @@ export function createDispatchApp(
       mode: companyErp.status().configured ? "company-erp" : "ecount-api",
       company: companyErp.status(),
       direct: ecount.status(),
+      salesInvoiceBrowser: true,
       salesDateFilter: true,
       regionalDispatch: true,
       customers: store.one("SELECT COUNT(*) AS n FROM catalog_customers").n,
@@ -783,6 +791,23 @@ export function createDispatchApp(
     assert(["customers", "products"].includes(String(req.params.kind)), "조회 항목을 확인해 주세요.");
     res.json(await companyErp.sync(req.params.kind as "customers" | "products"));
   });
+  app.post("/api/company-erp/sales/lists", admin, async (req, res) =>
+    res.status(201).json(await salesLists.fetch(
+      dateValue(req.body.salesDate), dateValue(req.body.serviceDate),
+    )),
+  );
+  app.get("/api/company-erp/sales/lists/latest", admin, (req, res) =>
+    res.json(salesLists.latest(dateValue(req.query.salesDate))),
+  );
+  app.get("/api/company-erp/sales/lists/:id", admin, (req, res) =>
+    res.json(salesLists.get(String(req.params.id))),
+  );
+  app.post("/api/company-erp/sales/lists/:id/dispatch", admin, async (req, res) =>
+    res.status(201).json(await salesLists.dispatch(String(req.params.id), req.body)),
+  );
+  app.get("/api/shipments/:id/invoice", admin, async (req, res) =>
+    res.json(await salesLists.shipmentInvoice(String(req.params.id))),
+  );
   app.post("/api/company-erp/sales/fetch", admin, async (req, res) => {
     assert(typeof req.body.salesDate === "string", "가져올 판매일자를 입력해 주세요.");
     const salesDate = dateValue(req.body.salesDate), date = dateValue(req.body.serviceDate);

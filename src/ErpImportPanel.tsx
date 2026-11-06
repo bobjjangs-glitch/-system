@@ -280,6 +280,7 @@ function EcountImportPanel({
 }
 
 export default function ErpImportPanel(props: {
+  onSalesList: (id: string) => void;
   date: string;
   disabled: boolean;
   onReview: (batch: SalesBatch) => void;

@@ -25,6 +25,7 @@ export type CompanyErpConnection = {
   confirmedSalesOnly: boolean;
 };
 export type ErpStatus = {
+  salesInvoiceBrowser?: boolean;
   customers: number;
   products: number;
   salesDateFilter?: boolean;

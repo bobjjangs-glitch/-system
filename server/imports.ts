@@ -724,6 +724,9 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
             "totalAmount",
             "discountRate",
             "listPrice",
+            "factoryPrice",
+            "retailPrice",
+            "wholesalePrice",
           ]
             .filter(
               (key) =>
@@ -746,6 +749,16 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
       ...(amount !== null ? { amount } : {}),
       ...(row.customerCode
         ? { customerCode: String(row.customerCode).slice(0, 100) }
+        : {}),
+      ...(typeof row.invoiceCustomerName === "string"
+        ? { invoiceCustomerName: row.invoiceCustomerName.slice(0, 100) }
+        : {}),
+      ...(typeof row.invoiceVehicleNo === "string"
+        ? { invoiceVehicleNo: row.invoiceVehicleNo.slice(0, 20) }
+        : {}),
+      ...(row.erpPriceChannel === "retail" ||
+      row.erpPriceChannel === "wholesale"
+        ? { erpPriceChannel: row.erpPriceChannel }
         : {}),
       ...(row.erpCustomerId
         ? { erpCustomerId: String(row.erpCustomerId).slice(0, 20) }

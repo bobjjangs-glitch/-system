@@ -49,13 +49,14 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
     $q = $query['q'] ?? ''; $date = $query['date'] ?? '';
     if (!is_string($q) || strlen($q) > 400) throw new InvalidArgumentException('검색어를 줄여 주세요.');
     if ($kind === 'sales' && (!is_string($date) || !bd_date($date))) throw new InvalidArgumentException('판매일자를 YYYY-MM-DD 형식으로 입력해 주세요.');
+    if ($kind === 'sales' && ($query['scope'] ?? '') === 'all') return bd_sales_documents($pdo, $query, $instance);
     $code = $kind !== 'products' ? bd_code_column($pdo) : "''";
     $args = []; $excluded = ['draft' => 0, 'canceled' => 0];
     if ($kind === 'customers') {
         $from = 'erp_partners p';
         $where = "p.is_active=1 AND p.partner_type IN ('customer','both')";
-        $fields = "p.id, $code, p.name, p.address, p.phone, p.updated_at";
-        $select = "p.id, $code AS code, p.name, p.address, p.phone";
+        $fields = "p.id, $code, p.name, p.address, p.phone, p.default_channel, p.updated_at";
+        $select = "p.id, $code AS code, p.name, p.address, p.phone, p.default_channel AS defaultChannel";
         if (trim($q) !== '') {
             $where .= " AND CONCAT_WS(' ', $code, p.name, p.address, p.phone) LIKE ?";
             $args[] = '%' . addcslashes(trim($q), '%_\\') . '%';
@@ -64,7 +65,9 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
     } elseif ($kind === 'products') {
         $from = 'erp_items i'; $where = 'i.is_active=1';
         $fields = 'i.id, i.item_code, i.name, i.spec, i.wholesale_price, i.pattern_name, i.tax_type, i.retail_price, i.updated_at';
-        $select = 'i.id, i.item_code AS code, i.name, i.spec AS specification, i.wholesale_price AS unitPrice, i.pattern_name AS pattern, i.tax_type AS taxType, i.retail_price AS listPrice';
+        $select = 'i.id, i.item_code AS code, i.name, i.spec AS specification, i.wholesale_price AS unitPrice, i.pattern_name AS pattern, i.tax_type AS taxType, i.retail_price AS listPrice, i.retail_price AS retailPrice, i.wholesale_price AS wholesalePrice';
+        $itemCols=bd_columns($pdo,'erp_items');$factory=bd_optional($itemCols,['factory_price','list_price'],'i.','NULL');
+        $fields.=", ".$factory;$select.=", ".$factory.' AS factoryPrice';
         if (trim($q) !== '') {
             $where .= " AND CONCAT_WS(' ', i.item_code, i.name, i.spec, i.brand, i.pattern_name) LIKE ?";
             $args[] = '%' . addcslashes(trim($q), '%_\\') . '%';
@@ -118,4 +121,47 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
         'total' => $digest[0], 'cursor' => (string)$after, 'nextCursor' => $more ? (string)end($rows)['id'] : null,
         'readAt' => gmdate('Y-m-d\TH:i:s\Z'), 'date' => $kind === 'sales' ? $date : null,
         'excluded' => $excluded, 'items' => $rows];
+}
+
+/** Public business fields only; never include database configuration, costs or account credentials. */
+function bd_columns(PDO $pdo,string $table): array {
+    if(!in_array($table,['erp_items','erp_trades','erp_trade_lines','erp_partners'],true))throw new InvalidArgumentException();
+    return $pdo->query('SHOW COLUMNS FROM '.$table)->fetchAll(PDO::FETCH_COLUMN);
+}
+function bd_optional(array $cols,array $names,string $prefix,string $fallback="''"): string {
+    foreach($names as $name)if(in_array($name,$cols,true))return $prefix.$name;
+    return $fallback;
+}
+function bd_supplier(): array {
+    $c=cfg('company',[]);if(!is_array($c))$c=[];
+    return ['name'=>(string)($c['name']??''),'businessNumber'=>(string)($c['biz_no']??''),'representative'=>(string)($c['ceo']??''),'address'=>(string)($c['address']??''),'phone'=>(string)($c['tel']??'')];
+}
+function bd_sales_documents(PDO $pdo,array $query,string $instance): array {
+    $date=$query['date'];$after=(int)($query['cursor']??'0');$size=(int)($query['limit']??'50');
+    $tc=bd_columns($pdo,'erp_trades');$lc=bd_columns($pdo,'erp_trade_lines');$ic=bd_columns($pdo,'erp_items');$pc=bd_columns($pdo,'erp_partners');
+    $code=bd_code_column($pdo);$from='erp_trades t LEFT JOIN erp_partners p ON p.id=t.partner_id';$where="t.trade_type='sale' AND t.trade_date=?";$args=[$date];
+    $addr=in_array('delivery_addr',$tc,true)?"COALESCE(NULLIF(t.delivery_addr,''),p.address,'')":"COALESCE(p.address,'')";
+    $phone=in_array('delivery_phone',$tc,true)?"COALESCE(NULLIF(t.delivery_phone,''),p.phone,'')":"COALESCE(p.phone,'')";
+    $recipient=in_array('delivery_recipient',$tc,true)?"COALESCE(NULLIF(t.delivery_recipient,''),NULLIF(p.name,''),t.customer_name,'')":"COALESCE(NULLIF(p.name,''),t.customer_name,'')";
+    $pay=bd_optional($tc,['pay_method'],'t.');$cancel=bd_optional($tc,['cancel_reason'],'t.');
+    $fields="t.id,t.trade_no,t.trade_date,t.status,t.channel,t.partner_id,t.customer_name,t.vehicle_no,t.supply_amount,t.vat_amount,t.total_amount,t.memo,t.updated_at,$code,p.name,p.business_no,p.ceo_name,p.address,p.phone,$addr,$phone,$recipient,$pay,$cancel";
+    $headers=bd_digest($pdo,$from,$where,$args,$fields);
+    $pattern=in_array('pattern_name',$lc,true)?"COALESCE(NULLIF(l.pattern_name,''),i.pattern_name,'')":"COALESCE(i.pattern_name,'')";
+    $itemCode=in_array('item_code',$lc,true)?"COALESCE(NULLIF(l.item_code,''),i.item_code,'')":"COALESCE(i.item_code,'')";
+    $factory=in_array('list_price',$lc,true)?'l.list_price':bd_optional($ic,['factory_price','list_price'],'i.','NULL');
+    if(in_array('dispatch_price_version',$lc,true)&&in_array('dispatch_factory_price',$lc,true))$factory="CASE WHEN l.dispatch_price_version=1 THEN l.dispatch_factory_price ELSE $factory END";
+    $dc=in_array('dc_rate',$lc,true)?'l.dc_rate / 100':'NULL';
+    $gross=in_array('dispatch_total',$lc,true)?'l.dispatch_total':'NULL';
+    $lineFields="l.id,l.trade_id,l.line_no,l.item_id,l.item_name,l.spec,l.tax_type,l.qty,l.unit_price,l.amount,l.memo,$pattern,$itemCode,$factory,$dc,$gross";
+    $linesDigest=bd_digest($pdo,'erp_trade_lines l JOIN erp_trades t ON t.id=l.trade_id LEFT JOIN erp_items i ON i.id=l.item_id',$where,$args,$lineFields);
+    $supplier=bd_supplier();$snapshot=hash('sha256',json_encode([$instance,$date,$headers,$linesDigest,$supplier]));
+    if(isset($query['snapshot'])&&(!is_string($query['snapshot'])||!hash_equals($snapshot,$query['snapshot'])))throw new DomainException('조회 중 판매전표가 바뀌었습니다. 다시 가져와 주세요.');
+    $st=$pdo->prepare("SELECT t.id,t.trade_no AS reference,t.trade_date AS saleDate,t.status,t.channel,t.partner_id AS erpCustomerId,t.customer_name AS customerName,t.vehicle_no AS vehicleNo,t.supply_amount AS supplyAmount,t.vat_amount AS vatAmount,t.total_amount AS amount,t.memo AS notes,$code AS customerCode,$addr AS address,$phone AS phone,$recipient AS recipient,$pay AS paymentMethod,$cancel AS cancelReason,COALESCE(p.name,t.customer_name,'') AS buyerName,COALESCE(p.business_no,'') AS buyerBusinessNumber,COALESCE(p.ceo_name,'') AS buyerRepresentative,COALESCE(p.address,'') AS buyerAddress,COALESCE(p.phone,'') AS buyerPhone FROM $from WHERE $where AND t.id>? ORDER BY t.id LIMIT ".($size+1));
+    $st->execute([$date,$after]);$rows=$st->fetchAll(PDO::FETCH_ASSOC);$more=count($rows)>$size;if($more)array_pop($rows);
+    if($rows){$ids=array_column($rows,'id');$marks=implode(',',array_fill(0,count($ids),'?'));
+        $st=$pdo->prepare("SELECT l.id,l.trade_id,l.line_no AS lineNo,l.item_id AS erpItemId,l.item_name AS name,l.spec AS specification,l.qty AS quantity,l.unit_price AS unitPrice,l.amount AS supplyAmount,l.tax_type AS taxType,l.memo AS remarks,$pattern AS pattern,$itemCode AS code,$factory AS factoryPrice,$dc AS discountRate,$gross AS totalAmount FROM erp_trade_lines l LEFT JOIN erp_items i ON i.id=l.item_id WHERE l.trade_id IN ($marks) ORDER BY l.trade_id,l.line_no,l.id LIMIT 10001");$st->execute($ids);$lines=$st->fetchAll(PDO::FETCH_ASSOC);if(count($lines)>10000)throw new LengthException('전표 품목이 너무 많습니다.');
+        $by=[];foreach($lines as $l){$tid=$l['trade_id'];unset($l['trade_id']);$l['id']=(string)$l['id'];$l['erpItemId']=(string)$l['erpItemId'];$l['amountBasis']=$l['totalAmount']===null?'supply':'total';$l['listPrice']=$l['factoryPrice'];$by[$tid][]=$l;}
+        foreach($rows as &$r){$r['id']=(string)$r['id'];$r['erpCustomerId']=(string)$r['erpCustomerId'];$r['items']=$by[$r['id']]??[];$r['supplier']=$supplier;$r['buyer']=['name'=>$r['buyerName'],'businessNumber'=>$r['buyerBusinessNumber'],'representative'=>$r['buyerRepresentative'],'address'=>$r['buyerAddress'],'phone'=>$r['buyerPhone']];foreach(['buyerName','buyerBusinessNumber','buyerRepresentative','buyerAddress','buyerPhone'] as $k)unset($r[$k]);}unset($r);
+    }
+    return ['schema'=>2,'ok'=>true,'kind'=>'sales','scope'=>'all','invoiceVersion'=>1,'instanceId'=>$instance,'snapshot'=>$snapshot,'total'=>$headers[0],'cursor'=>(string)$after,'nextCursor'=>$more?(string)end($rows)['id']:null,'readAt'=>gmdate('Y-m-d\TH:i:s\Z'),'date'=>$date,'excluded'=>['draft'=>0,'canceled'=>0],'items'=>$rows];
 }

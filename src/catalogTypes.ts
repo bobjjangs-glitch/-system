@@ -3,6 +3,10 @@ export type CatalogEntry = {
   code: string;
   name: string;
   source: string;
+  defaultChannel?: "retail" | "wholesale";
+  retailPrice?: number | null;
+  wholesalePrice?: number | null;
+  factoryPrice?: number | null;
   remoteId?: string;
   pattern?: string;
   taxType?: "taxable" | "exempt";

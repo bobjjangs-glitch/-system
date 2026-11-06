@@ -4,22 +4,26 @@ import { api } from "./api";
 import { Button, Card, Field, C, s } from "./ui";
 import { readTime, type ErpStatus } from "./ecountTypes";
 import { validSalesDate } from "./salesReference";
-import type { SalesBatch } from "./ErpImportPanel";
+import type { SalesList } from "./salesDocuments";
 export default function CompanyErpPanel({
   date,
   disabled,
-  onReview,
+  onSalesList,
 }: {
   date: string;
   disabled: boolean;
-  onReview: (batch: SalesBatch) => void;
+  onReview?: unknown;
+  onSalesList: (id: string) => void;
 }) {
   const [status, setStatus] = useState<ErpStatus | null>(null),
     [salesDate, setSalesDate] = useState(date),
     [busy, setBusy] = useState(""),
     [message, setMessage] = useState(""),
     [error, setError] = useState(""),
-    [help, setHelp] = useState(false);
+    [help, setHelp] = useState(false),
+    [lastList, setLastList] = useState<{ id: string; count: number } | null>(
+      null,
+    );
   const active = useRef(true),
     guard = useRef(false);
   const refresh = async () => {
@@ -36,6 +40,22 @@ export default function CompanyErpPanel({
     };
   }, []);
   useEffect(() => setSalesDate(date), [date]);
+  useEffect(() => {
+    let current = true;
+    setLastList(null);
+    if (validSalesDate(salesDate))
+      api<SalesList | null>(
+        "/api/company-erp/sales/lists/latest?salesDate=" + salesDate,
+      )
+        .then((v) => {
+          if (current && v)
+            setLastList({ id: v.id, count: v.documents.length });
+        })
+        .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [salesDate]);
   const run = async (kind: "customers" | "products" | "sales" | "status") => {
     if (guard.current || disabled) return;
     guard.current = true;
@@ -52,27 +72,16 @@ export default function CompanyErpPanel({
           throw new Error(
             "판매 조회 일자를 YYYY-MM-DD 형식으로 입력해 주세요.",
           );
-        const result = await api<
-          SalesBatch & {
-            empty?: boolean;
-            message?: string;
-            sourceReadAt: string;
-          }
-        >("/api/company-erp/sales/fetch", {
+        const result = await api<SalesList>("/api/company-erp/sales/lists", {
           method: "POST",
           body: JSON.stringify({ salesDate, serviceDate: date }),
         });
         if (!active.current) return;
-        if (result.empty)
-          setMessage(
-            [result.message, ...(result.recognitionWarnings ?? [])]
-              .filter(Boolean)
-              .join("\n"),
-          );
-        else {
-          setMessage(`회사 ERP 조회 완료 · ${readTime(result.sourceReadAt)}`);
-          onReview(result);
-        }
+        setLastList({ id: result.id, count: result.documents.length });
+        setMessage(
+          `ERP 판매전표 ${result.documents.length}건 조회 · ${readTime(result.sourceReadAt)}`,
+        );
+        onSalesList(result.id);
       } else {
         const result = await api<{ count: number; updatedAt: string }>(
           "/api/company-erp/catalog/" + kind + "/sync",
@@ -137,6 +146,12 @@ export default function CompanyErpPanel({
           disabled={locked}
         />
       </View>
+      {status && !status.salesInvoiceBrowser && (
+        <Text style={{ color: C.amber, marginBottom: 12 }}>
+          판매목록·거래명세서 기능을 사용하려면 Render 서버를 최신 버전으로
+          배포해 주세요.
+        </Text>
+      )}
       <Field
         label="판매 조회 일자"
         value={salesDate}
@@ -145,17 +160,29 @@ export default function CompanyErpPanel({
         editable={!busy}
       />
       <Text style={[s.muted, { marginBottom: 12 }]}>
-        선택한 날짜의 확정 전표를 가져옵니다. 작성중·취소·반품 전표는 제외하며,
-        배송 예정일은 {date}입니다. 이미 등록한 전표는 중복으로 등록하지
-        않습니다.
+        선택한 날짜의 작성중·확정·취소 판매전표를 목록으로 확인합니다.
+        전표번호를 눌러 명세서를 보고, 배송할 전표만 선택하세요. 배송 예정일은{" "}
+        {date}입니다.
       </Text>
       <Button
         title={
           busy === "sales" ? "최신 판매전표 조회 중…" : "판매조회 내역 가져오기"
         }
         onPress={() => run("sales")}
-        disabled={locked || !validSalesDate(salesDate)}
+        disabled={
+          locked || !validSalesDate(salesDate) || !status?.salesInvoiceBrowser
+        }
       />
+      {lastList && (
+        <View style={{ marginTop: 10 }}>
+          <Button
+            title={`마지막 판매조회 목록 보기 · ${lastList.count}건`}
+            secondary
+            onPress={() => onSalesList(lastList.id)}
+            disabled={disabled || !!busy}
+          />
+        </View>
+      )}
       <Text style={[s.muted, { marginTop: 12 }]}>
         거래처 · {readTime(company?.reads.customers?.at)}
         {"\n"}품목 · {readTime(company?.reads.products?.at)}
@@ -199,8 +226,9 @@ export default function CompanyErpPanel({
             추가합니다. 기존 DB 설정 파일은 덮어쓰지 않습니다.
           </Text>
           <Text selectable style={s.muted}>
-            2. ERP 관리자 계정으로 dispatch_setup.php에 접속해 연동키를
-            발급합니다. Render → Environment의 COMPANY_ERP_TOKEN에만 저장하세요.
+            2. 기존 연결키는 그대로 사용합니다. 처음 설치할 때 ERP 관리자
+            계정으로 dispatch_setup.php에서 발급합니다. Render → Environment의
+            COMPANY_ERP_TOKEN에만 저장하세요.
           </Text>
           <Text selectable style={s.muted}>
             3. COMPANY_ERP_API_URL을 회사 ERP의 dispatch_api.php HTTPS 주소로

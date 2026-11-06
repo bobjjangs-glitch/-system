@@ -244,6 +244,7 @@ export function Sheet({
           >
             <Text style={s.h2}>{title}</Text>
             <Pressable
+              accessibilityRole="button"
               accessibilityLabel="닫기"
               onPress={onClose}
               style={{ padding: 7 }}

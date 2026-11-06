@@ -60,13 +60,21 @@ export function changeInvoiceNumber(
     | "unitPrice"
     | "supplyAmount"
     | "totalAmount"
-    | "discountRate",
+    | "discountRate"
+    | "factoryPrice",
   value: number | null,
 ): Item {
   const next = {
     ...item,
+    ...(field !== "quantity" ? { priceOrigin: "manual" as const } : {}),
     [field]: field === "quantity" && value === null ? NaN : value,
   };
+  if (field === "factoryPrice") {
+    next.listPrice = value;
+    return item.discountRate == null
+      ? calculateInvoiceLine(next)
+      : changeInvoiceNumber(next, "discountRate", item.discountRate);
+  }
   if (field === "discountRate") {
     if (value === null) return next;
     const bp = Math.round(value * 100);
@@ -144,6 +152,8 @@ export function validateInvoiceItems(items: Item[]): Item[] {
       !["unit", "supply", "total"].includes(item.amountBasis)
     )
       throw new Error(`${i + 1}행 금액 기준을 확인해 주세요.`);
+    if (item.factoryPrice != null && !won(item.factoryPrice))
+      throw new Error(`${i + 1}행 공장도가를 원 단위로 확인해 주세요.`);
     const line = calculateInvoiceLine(item);
     if (
       !won(line.unitPrice) ||
