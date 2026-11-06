@@ -271,7 +271,7 @@ export function searchCatalog(
   ])
     searchExpression = `REPLACE(${searchExpression},'${character}','')`;
   const rows = store.all(
-    `SELECT * FROM ${tableName} WHERE ${searchExpression} LIKE ? ESCAPE '\\' ORDER BY updatedAt DESC LIMIT 50`,
+    `SELECT * FROM ${tableName} AS catalog WHERE ${searchExpression} LIKE ? ESCAPE '\\' ${kind === "products" ? "AND (source!='ecount' OR NOT EXISTS (SELECT 1 FROM catalog_products AS live WHERE live.code=catalog.code AND live.source='ecount-api'))" : ""} ORDER BY (source='ecount-api') DESC,updatedAt DESC LIMIT 50`,
     pattern,
   );
   if (kind === "customers" && rows.length < 30) {
@@ -490,7 +490,7 @@ export async function parseSalesExport(
       );
     const products = code
       ? store.all(
-          "SELECT * FROM catalog_products WHERE code=? AND source='ecount'",
+          "SELECT * FROM catalog_products AS catalog WHERE code=? AND (source='ecount-api' OR (source='ecount' AND NOT EXISTS (SELECT 1 FROM catalog_products AS live WHERE live.code=catalog.code AND live.source='ecount-api')))",
           code,
         )
       : [];

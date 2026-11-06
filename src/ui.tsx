@@ -91,6 +91,7 @@ export function Field({
   inputStyle,
   onSubmitEditing,
   returnKeyType,
+  editable = true,
 }: {
   label: string;
   value: string;
@@ -105,11 +106,13 @@ export function Field({
   inputStyle?: TextInputProps["style"];
   onSubmitEditing?: TextInputProps["onSubmitEditing"];
   returnKeyType?: TextInputProps["returnKeyType"];
+  editable?: boolean;
 }) {
   return (
     <View style={{ gap: 7, marginBottom: 13 }}>
       <Text style={s.label}>{label}</Text>
       <TextInput
+        editable={editable}
         accessibilityLabel={label}
         value={value}
         onChangeText={onChangeText}

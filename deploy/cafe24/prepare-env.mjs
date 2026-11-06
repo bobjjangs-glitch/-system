@@ -38,6 +38,10 @@ const contents = [
   "TRUST_PROXY=loopback",
   `DISPATCH_BOOTSTRAP_TOKEN=${token}`,
   "KAKAO_REST_API_KEY=",
+  "ECOUNT_COM_CODE=",
+  "ECOUNT_USER_ID=",
+  "ECOUNT_API_CERT_KEY=",
+  "ECOUNT_ENV=production",
   "",
 ].join("\n");
 writeFileSync(envFile, contents, { mode: 0o600, flag: "wx" });

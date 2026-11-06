@@ -45,6 +45,9 @@ import {
   searchCatalog,
   parseSalesExport, salesImportKeys, savedManualSale,
 } from "./erpCatalog.ts";
+import {
+  EcountReadClient, EcountReadError, type EcountReadDeps,
+} from "./ecountRead.ts";
 import { seedDemo } from "./demo.ts";
 import { createMapDocument } from "../src/mapDocument.ts";
 import { extractReceipt } from "../src/receiptText.ts";
@@ -88,12 +91,14 @@ export function createDispatchApp(
     roadRouting?: boolean;
     test?: boolean;
     autoGeocode?: boolean;
+    ecount?: EcountReadDeps;
   } = {},
 ) {
   const dataDir = resolve(
     options.dataDir ?? process.env.APP_DATA_DIR ?? ".local",
   );
   const store = new Store(dataDir);
+  const ecount = new EcountReadClient(store, options.ecount);
   mkdirSync(join(dataDir, "uploads"), { recursive: true, mode: 0o700 });
   const app = express(),
     server = createServer(app),
@@ -734,11 +739,31 @@ export function createDispatchApp(
   });
   app.get("/api/erp/status", admin, (_req, res) =>
     res.json({
-      mode: "ecount-excel", salesDateFilter: true, regionalDispatch: true,
+      mode: "ecount-api",
+      direct: ecount.status(),
+      salesDateFilter: true,
+      regionalDispatch: true,
       customers: store.one("SELECT COUNT(*) AS n FROM catalog_customers").n,
       products: store.one("SELECT COUNT(*) AS n FROM catalog_products").n,
     }),
   );
+  app.post("/api/erp/products/sync", admin, async (_req, res) => {
+    res.json(await ecount.syncProducts());
+  });
+  app.get("/api/erp/products/lookup", admin, async (req, res) => {
+    res.json(await ecount.lookupProduct(req.query.code));
+  });
+  app.get("/api/erp/live/:kind", admin, (req, res) => {
+    assert(
+      ["customers", "sales"].includes(String(req.params.kind)),
+      "조회 항목을 확인해 주세요.", 404,
+    );
+    const status = ecount.status();
+    res.status(501).json({
+      error: req.params.kind === "customers" ? status.customers.reason : status.sales.reason,
+      code: "READ_API_UNAVAILABLE",
+    });
+  });
   app.post(
     "/api/erp/catalog/:kind/import",
     admin,
@@ -1950,6 +1975,10 @@ export function createDispatchApp(
       res: Response,
       _next: NextFunction,
     ) => {
+      if (error instanceof EcountReadError) {
+        if (error.retryAfter) res.set("Retry-After", String(error.retryAfter));
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
       if (error instanceof multer.MulterError)
         return res
           .status(400)
@@ -1976,6 +2005,7 @@ export function createDispatchApp(
     store,
     close: async () => {
       closing = true;
+      await ecount.close();
       clearInterval(liveTimer);
       await Promise.allSettled(addressJobs);
       await shutdownReceiptOcrPool();
