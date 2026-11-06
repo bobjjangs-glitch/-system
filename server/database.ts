@@ -119,6 +119,7 @@ export class Store {
       this.db.exec(
         "ALTER TABLE imports ADD COLUMN meta TEXT NOT NULL DEFAULT '{}' ",
       );
+    this.db.exec(`CREATE TABLE IF NOT EXISTS company_sale_requests(id TEXT PRIMARY KEY,userId TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'draft',payload TEXT,requestHash TEXT,remoteJson TEXT,importId TEXT NOT NULL,shipmentId TEXT NOT NULL,error TEXT,createdAt TEXT NOT NULL,updatedAt TEXT NOT NULL);`);
     this.applyCompanyPreset();
   }
   one<T = any>(sql: string, ...args: any[]): T | undefined {

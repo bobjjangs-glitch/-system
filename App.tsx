@@ -101,6 +101,10 @@ import RegionalDispatchSummary from "./src/RegionalDispatchSummary";
 import { deliveryRegion, deliveryRegionGroups } from "./src/deliveryRegion";
 import { parseSalesReference } from "./src/salesReference";
 import CatalogPicker from "./src/CatalogPicker";
+import InvoiceItemsEditor from "./src/InvoiceItemsEditor";
+import ErpSaleIdentity from "./src/ErpSaleIdentity";
+import PendingErpSales from "./src/PendingErpSales";
+import { calculateInvoiceLine, invoiceTotals } from "./src/invoiceMath";
 import ErpImportPanel from "./src/ErpImportPanel";
 import DispatchBoardScreen from "./src/DispatchBoardScreen";
 import type { BoardDrop } from "./src/dispatchBoardTypes";
@@ -184,6 +188,9 @@ type Dashboard = {
   };
 };
 type ImportBatch = {
+  erpSaleRequestId?: string;
+  erpSaleLocked?: boolean;
+  erpWriteReady?: boolean;
   id?: string;
   deviceLocalId?: string;
   deviceRecognitionMs?: number;
@@ -1273,7 +1280,20 @@ function Admin({
         )
       )
         throw new Error("전표 금액을 숫자로 확인해 주세요.");
-      if (batch.deviceLocalId) {
+      if (batch.erpSaleRequestId) {
+        const locked = { ...batch, erpSaleLocked: true };
+        reviewRef.current = locked;
+        setReview(locked);
+        const result = await post(
+          "/api/company-erp/sale-requests/" +
+            batch.erpSaleRequestId +
+            "/commit",
+          { row: batch.drafts[0] },
+        );
+        const saleDate = parseSalesReference(result.salesReference)?.date;
+        if (saleDate) setDate(saleDate);
+        tell(`ERP 판매전표 ${result.salesReference} · 배송지 저장 완료`);
+      } else if (batch.deviceLocalId) {
         let local = deviceDraftsRef.current.find(
           (draft) => draft.localId === batch.deviceLocalId,
         );
@@ -1343,6 +1363,18 @@ function Admin({
         });
       }
     } catch (error) {
+      if (batch.erpSaleRequestId) {
+        try {
+          const op = await api<any>(
+            "/api/company-erp/sale-requests/" + batch.erpSaleRequestId,
+          );
+          if (op.status === "draft" && mounted.current) {
+            const editable = { ...batch, erpSaleLocked: false };
+            reviewRef.current = editable;
+            setReview(editable);
+          }
+        } catch {}
+      }
       if (mounted.current) setReviewError((error as Error).message);
       throw error;
     } finally {
@@ -1929,11 +1961,26 @@ function Admin({
                   icon={Plus}
                   disabled={busy || !!uploadProgress}
                   onPress={() =>
-                    !uploadRef.current &&
-                    setReview({
-                      fileName: "직접 입력",
-                      drafts: [blankShipment()],
-                      serviceDate: date,
+                    run(async () => {
+                      if (uploadRef.current) return;
+                      const status = await api<any>("/api/erp/status");
+                      if (status.company?.configured) {
+                        const op = await post("/api/company-erp/sale-requests");
+                        const today = koreanDate();
+                        setDate(today);
+                        setReview({
+                          fileName: "ERP 판매전표 작성",
+                          drafts: [blankShipment()],
+                          serviceDate: today,
+                          erpSaleRequestId: op.requestId,
+                          erpWriteReady: false,
+                        });
+                      } else
+                        setReview({
+                          fileName: "직접 입력",
+                          drafts: [blankShipment()],
+                          serviceDate: date,
+                        });
                     })
                   }
                 />
@@ -1943,6 +1990,25 @@ function Admin({
               거래명세서 제목 아래의 거래처·주소·연락처와 품목표가 함께 보이게
               촬영해 주세요.
             </Text>
+            <PendingErpSales
+              refreshKey={review?.erpSaleRequestId ?? "closed"}
+              onResume={(id) =>
+                run(async () => {
+                  const op = await api<any>(
+                    "/api/company-erp/sale-requests/" + id,
+                  );
+                  if (!op.row) throw new Error("저장 내용을 찾을 수 없습니다.");
+                  setReview({
+                    fileName: "ERP 판매 저장 마무리",
+                    drafts: [op.row],
+                    serviceDate: op.sale?.saleDate ?? koreanDate(),
+                    erpSaleRequestId: id,
+                    erpSaleLocked: op.status !== "draft",
+                    erpWriteReady: true,
+                  });
+                })
+              }
+            />
             <ErpImportPanel
               date={date}
               disabled={busy || !!uploadProgress || !!review}
@@ -2736,11 +2802,22 @@ function Admin({
                     </Pressable>
                   )}
                 </View>
-                {!row.erpSourceKey && (
+                {review.erpSaleRequestId && (
+                  <ErpSaleIdentity
+                    requestId={review.erpSaleRequestId}
+                    locked={!!review.erpSaleLocked}
+                    onReady={(ready) =>
+                      setReview((old) =>
+                        old ? { ...old, erpWriteReady: ready } : old,
+                      )
+                    }
+                  />
+                )}
+                {!row.erpSourceKey && !review.erpSaleRequestId && (
                   <Field
                     label="판매번호 (선택)"
                     value={row.salesReference ?? ""}
-                    placeholder="26/11/05-47"
+                    placeholder="20261106-48"
                     onChangeText={(salesReference) =>
                       updateReview(index, { salesReference })
                     }
@@ -2763,7 +2840,7 @@ function Admin({
                     title="거래처 검색"
                     secondary
                     small
-                    disabled={busy}
+                    disabled={busy || !!review.erpSaleLocked}
                     onPress={() =>
                       setCatalogTarget({ kind: "customers", row: index })
                     }
@@ -2771,13 +2848,19 @@ function Admin({
                 </View>
                 <Field
                   label="수령인 / 거래처"
+                  editable={!review.erpSaleLocked}
                   value={row.recipient}
                   onChangeText={(recipient) =>
-                    updateReview(index, { recipient, customerCode: undefined })
+                    updateReview(index, {
+                      recipient,
+                      customerCode: undefined,
+                      erpCustomerId: undefined,
+                    })
                   }
                 />
                 <Field
                   label="배송주소"
+                  editable={!review.erpSaleLocked}
                   value={row.address}
                   onChangeText={(address) =>
                     updateReview(index, { address, lat: null, lng: null })
@@ -2789,96 +2872,36 @@ function Admin({
                 </Text>
                 <Field
                   label="연락처"
+                  editable={!review.erpSaleLocked}
                   value={row.phone ?? ""}
                   onChangeText={(phone) => updateReview(index, { phone })}
                 />
-                {row.items.map((item, i) => (
-                  <View key={i} style={[s.row, { alignItems: "flex-start" }]}>
-                    <View style={{ flex: 1 }}>
-                      <Button
-                        title="품목 검색"
-                        secondary
-                        small
-                        disabled={busy}
-                        onPress={() =>
-                          setCatalogTarget({
-                            kind: "products",
-                            row: index,
-                            item: i,
-                          })
-                        }
-                      />
-                      <Field
-                        label={`물품 ${i + 1}`}
-                        value={item.name}
-                        multiline
-                        onChangeText={(name) =>
-                          updateReview(index, {
-                            items: row.items.map((v, j) =>
-                              j === i ? { ...v, name, code: undefined } : v,
-                            ),
-                          })
-                        }
-                      />
-                    </View>
-                    <View style={{ width: 75 }}>
-                      <Field
-                        label="수량"
-                        value={String(item.quantity)}
-                        numeric
-                        onChangeText={(quantity) =>
-                          updateReview(index, {
-                            items: row.items.map((v, j) =>
-                              j === i
-                                ? { ...v, quantity: Number(quantity) }
-                                : v,
-                            ),
-                          })
-                        }
-                      />
-                    </View>
-                    {row.items.length > 1 && (
-                      <Pressable
-                        accessibilityLabel="물품 삭제"
-                        onPress={() =>
-                          updateReview(index, {
-                            items: row.items.filter((_, j) => j !== i),
-                          })
-                        }
-                        style={{ paddingTop: 34 }}
-                      >
-                        <X size={17} color={C.muted} />
-                      </Pressable>
-                    )}
-                  </View>
-                ))}
-                <Button
-                  title="물품 추가"
-                  secondary
-                  small
-                  icon={Plus}
-                  onPress={() =>
-                    updateReview(index, {
-                      items: [...row.items, { name: "", quantity: 1 }],
-                    })
+                <InvoiceItemsEditor
+                  items={row.items}
+                  disabled={
+                    busy ||
+                    !!review.erpSaleLocked ||
+                    (review.status === "edit" && !!row.erpSourceKey)
                   }
-                />
-                <View style={s.divider} />
-                <Field
-                  label="전표 금액 (원 · 선택)"
-                  numeric
-                  value={row.amount == null ? "" : String(row.amount)}
-                  onChangeText={(value) =>
-                    updateReview(index, {
-                      amount:
-                        value.trim() === ""
-                          ? null
-                          : Number(value.replace(/,/g, "")),
-                    })
+                  onSearch={(item) =>
+                    setCatalogTarget({ kind: "products", row: index, item })
                   }
+                  onChange={(items) => {
+                    const totals = invoiceTotals(items);
+                    updateReview(index, {
+                      items,
+                      ...(totals.complete ? { amount: totals.total } : {}),
+                    });
+                  }}
                 />
+                {!review.erpSaleRequestId && row.amount != null && (
+                  <Text style={[s.muted, { marginBottom: 12 }]}>
+                    전표 합계 {row.amount.toLocaleString()}원
+                  </Text>
+                )}
                 <Field
                   label="요청사항"
+                  editable={!review.erpSaleLocked}
                   value={row.notes ?? ""}
                   onChangeText={(notes) => updateReview(index, { notes })}
                 />
@@ -2925,9 +2948,19 @@ function Admin({
               확인합니다.
             </Text>
             <Button
-              title={`${review.drafts.length}곳 확인하고 ${review.status === "edit" ? "저장" : "배송지 등록"}`}
+              title={
+                review.erpSaleRequestId
+                  ? "ERP 판매·배송지 함께 저장"
+                  : `${review.drafts.length}곳 확인하고 ${review.status === "edit" ? "저장" : "배송지 등록"}`
+              }
               icon={Check}
-              disabled={busy || !!uploadProgress}
+              disabled={
+                busy ||
+                !!uploadProgress ||
+                (!!review.erpSaleRequestId &&
+                  !review.erpWriteReady &&
+                  !review.erpSaleLocked)
+              }
               onPress={() => run(() => saveReview())}
             />
             {reviewError ? (
@@ -2952,6 +2985,7 @@ function Admin({
                 </View>
               )}
             {review.status !== "edit" &&
+              !review.erpSaleRequestId &&
               !review.drafts.some((row) => row.erpSourceKey) && (
                 <View style={{ marginTop: 10 }}>
                   <Button
@@ -2996,6 +3030,7 @@ function Admin({
               address: entry.address ?? "",
               phone: entry.phone ?? "",
               customerCode: entry.code,
+              erpCustomerId: entry.remoteId,
               lat: null,
               lng: null,
             });
@@ -3003,7 +3038,7 @@ function Admin({
             updateReview(catalogTarget.row, {
               items: row.items.map((item, i) =>
                 i === catalogTarget.item
-                  ? {
+                  ? calculateInvoiceLine({
                       ...item,
                       name:
                         entry.name +
@@ -3012,7 +3047,14 @@ function Admin({
                           ? " " + entry.specification
                           : ""),
                       code: entry.code,
-                    }
+                      erpItemId: entry.remoteId,
+                      specification: entry.specification,
+                      pattern: entry.pattern,
+                      unitPrice: entry.unitPrice ?? null,
+                      listPrice: entry.listPrice ?? null,
+                      taxType: entry.taxType ?? "taxable",
+                      amountBasis: "unit",
+                    })
                   : item,
               ),
             });

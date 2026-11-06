@@ -1,5 +1,20 @@
 export type Point = { lat: number; lng: number };
-export type Item = { name: string; quantity: number; code?: string };
+export type Item = {
+  name: string;
+  quantity: number;
+  code?: string;
+  specification?: string;
+  pattern?: string;
+  erpItemId?: string;
+  unitPrice?: number | null;
+  supplyAmount?: number | null;
+  totalAmount?: number | null;
+  discountRate?: number | null;
+  listPrice?: number | null;
+  taxType?: "taxable" | "exempt";
+  amountBasis?: "unit" | "supply" | "total";
+  remarks?: string;
+};
 export type ShipmentInput = {
   recipient: string;
   address: string;
@@ -10,6 +25,7 @@ export type ShipmentInput = {
   lng?: number | null;
   amount?: number | null;
   customerCode?: string;
+  erpCustomerId?: string;
   salesReference?: string;
   erpSourceKey?: string;
 };

@@ -306,3 +306,35 @@ test("ERP의 선택 코드·주소·연락처가 NULL이어도 수량이나 주�
   assert.equal(result.drafts[0].items[0].quantity, 5);
   assert.ok(result.recognitionWarnings.some((s) => s.includes("주소가 없는")));
 });
+
+test("PHP 응답의 숫자/문자 스칼라를 안전하게 정규화하고 품목 ID를 보존한다", async (t) => {
+  const { client, state } = await fixture(t);
+  state.mutate = (data: any) => ({
+    ...data,
+    schema: "1",
+    ok: "1",
+    total: String(data.total),
+    cursor: Number(data.cursor),
+    nextCursor: data.nextCursor == null ? null : Number(data.nextCursor),
+    items: data.items.map((r: any) => ({ ...r, id: Number(r.id) })),
+  });
+  assert.equal((await client.sync("products")).count, 1);
+  const result = await client.search("products", "");
+  assert.equal(result[0].remoteId, "1");
+});
+test("20,000개 초과 검색 자료를 형식 오류로 처리하지 않으며 누락된 계약 항목만 안내한다", async (t) => {
+  const { client, state } = await fixture(t);
+  state.mutate = (data: any) => ({ ...data, total: 25001, nextCursor: "1" });
+  assert.equal((await client.search("products", "")).length, 1);
+  state.mutate = (data: any) => {
+    const { snapshot, ...rest } = data;
+    return rest;
+  };
+  await assert.rejects(
+    client.search("products", ""),
+    (e: any) =>
+      e.code === "FORMAT" &&
+      e.message.includes("snapshot") &&
+      !e.message.includes(token),
+  );
+});

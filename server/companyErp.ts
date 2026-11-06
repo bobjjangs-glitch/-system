@@ -23,6 +23,10 @@ export type CompanyErpDeps = {
 export type CompanyCatalogKind = "customers" | "products";
 export type CompanyCatalogEntry = {
   id: string;
+  remoteId?: string;
+  pattern?: string;
+  taxType?: "taxable" | "exempt";
+  listPrice?: number | null;
   code: string;
   name: string;
   source: "company-erp" | "company-erp-live";
@@ -258,29 +262,76 @@ export class CompanyErpClient {
           502,
         );
       }
+      // PHP/PDO may serialize scalar metadata as strings. Normalize only exact safe scalars.
+      const numeric = (v: unknown) =>
+        typeof v === "string" &&
+        /^(0|[1-9][0-9]*)$/.test(v) &&
+        Number.isSafeInteger(Number(v))
+          ? Number(v)
+          : v;
+      const identifier = (v: unknown) =>
+        typeof v === "number" && Number.isSafeInteger(v) && v >= 0
+          ? String(v)
+          : v;
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        data.schema = numeric(data.schema);
+        data.total = numeric(data.total);
+        data.ok = [true, 1, "1", "true"].includes(data.ok);
+        data.cursor = identifier(data.cursor);
+        data.nextCursor = identifier(data.nextCursor);
+        if (Array.isArray(data.items))
+          data.items = data.items.map((row: any) =>
+            row && typeof row === "object"
+              ? { ...row, id: identifier(row.id) }
+              : row,
+          );
+        if (data.excluded && typeof data.excluded === "object")
+          data.excluded = {
+            ...data.excluded,
+            draft: numeric(data.excluded.draft),
+            canceled: numeric(data.excluded.canceled),
+          };
+      }
+      const wrong: string[] = [];
+      if (data?.schema !== 1 && data?.schema !== 2) wrong.push("schema");
+      if (data?.ok !== true) wrong.push("ok");
+      if (data?.kind !== kind) wrong.push("kind");
       if (
-        data?.schema !== 1 ||
-        data.ok !== true ||
-        data.kind !== kind ||
-        typeof data.instanceId !== "string" ||
-        !/^[a-f0-9]{32}$/.test(data.instanceId) ||
-        typeof data.snapshot !== "string" ||
-        !/^[a-f0-9]{64}$/.test(data.snapshot) ||
-        !integer(data.total) ||
-        data.total > 20000 ||
-        !Array.isArray(data.items) ||
-        data.items.length > Number(query.limit ?? 500) ||
-        data.items.length > data.total ||
-        data.cursor !== (query.cursor ?? "0") ||
-        (data.nextCursor !== null && !remoteId(data.nextCursor)) ||
-        typeof data.readAt !== "string" ||
-        !Number.isFinite(Date.parse(data.readAt)) ||
-        (kind === "sales" && data.date !== query.date)
+        typeof data?.instanceId !== "string" ||
+        !/^[a-f0-9]{32}$/.test(data.instanceId)
       )
+        wrong.push("instanceId");
+      if (
+        typeof data?.snapshot !== "string" ||
+        !/^[a-f0-9]{64}$/.test(data.snapshot)
+      )
+        wrong.push("snapshot");
+      if (!integer(data?.total)) wrong.push("total");
+      if (
+        !Array.isArray(data?.items) ||
+        data.items.length > Number(query.limit ?? 500) ||
+        data.items.length > data.total
+      )
+        wrong.push("items");
+      if (data?.cursor !== (query.cursor ?? "0")) wrong.push("cursor");
+      if (data?.nextCursor !== null && !remoteId(data?.nextCursor))
+        wrong.push("nextCursor");
+      if (
+        typeof data?.readAt !== "string" ||
+        !Number.isFinite(Date.parse(data.readAt))
+      )
+        wrong.push("readAt");
+      if (kind === "sales" && data?.date !== query.date) wrong.push("date");
+      if (wrong.length)
         throw new CompanyErpError(
           "FORMAT",
-          "회사 ERP 연동 응답 형식을 확인하지 못했습니다. 연동 파일을 최신 버전으로 설치해 주세요.",
+          `회사 ERP 연동 응답의 ${wrong.join("·")} 항목이 맞지 않습니다. dispatch_api.php와 inc/dispatch_bridge.php를 같은 최신 ZIP으로 교체해 주세요.`,
           502,
+        );
+      if (data.total > 100000)
+        throw new CompanyErpError(
+          "LIMIT",
+          "전체 품목·거래처가 100,000개를 넘습니다. 검색어를 입력해 조회 범위를 줄여 주세요.",
         );
       let previous = BigInt(query.cursor ?? "0");
       for (const item of data.items) {
@@ -324,7 +375,7 @@ export class CompanyErpClient {
       total = -1,
       latest: Page | undefined;
     const items: any[] = [];
-    for (let page = 0; page < 41; page++) {
+    for (let page = 0; page < (kind === "sales" ? 41 : 201); page++) {
       const result = await this.page(
         kind,
         {
@@ -351,7 +402,7 @@ export class CompanyErpClient {
       instance = result.instanceId;
       latest = result;
       items.push(...result.items);
-      if (items.length > 20000 || items.length > total)
+      if (items.length > 100000 || items.length > total)
         throw new CompanyErpError(
           "LIMIT",
           "ERP 목록의 전체 개수를 확인하지 못했습니다. 기존 자료를 유지합니다.",
@@ -391,6 +442,7 @@ export class CompanyErpClient {
     return kind === "customers"
       ? {
           id,
+          remoteId: row.id,
           code,
           name,
           address: text(row.address ?? "", 500),
@@ -400,8 +452,12 @@ export class CompanyErpClient {
         }
       : {
           id,
+          remoteId: row.id,
           code,
           name,
+          pattern: text(row.pattern ?? "", 80),
+          taxType: row.taxType === "exempt" ? "exempt" : "taxable",
+          listPrice: row.listPrice == null ? null : this.price(row.listPrice),
           specification: text(row.specification ?? "", 200),
           unitPrice: this.price(row.unitPrice),
           source: "company-erp",
@@ -558,6 +614,29 @@ export class CompanyErpClient {
               name: spec && !name.includes(spec) ? name + " " + spec : name,
               quantity: Number(item.quantity),
               ...(code ? { code } : {}),
+              ...(remoteId(String(item.erpItemId ?? ""))
+                ? { erpItemId: String(item.erpItemId) }
+                : {}),
+              specification: spec,
+              pattern: text(item.pattern ?? "", 80),
+              ...(item.taxType === "taxable" || item.taxType === "exempt"
+                ? { taxType: item.taxType }
+                : {}),
+              ...Object.fromEntries(
+                [
+                  "unitPrice",
+                  "supplyAmount",
+                  "totalAmount",
+                  "listPrice",
+                  "discountRate",
+                ]
+                  .filter((k) => item[k] != null)
+                  .map((k) => [k, this.price(item[k])]),
+              ),
+              remarks: text(item.remarks ?? "", 200),
+              ...(["unit", "supply", "total"].includes(item.amountBasis)
+                ? { amountBasis: item.amountBasis }
+                : {}),
             };
           });
           const draft: ShipmentInput = {
@@ -627,6 +706,100 @@ export class CompanyErpClient {
       },
       true,
     );
+  }
+  async saleTransport(method: "GET" | "POST", body?: unknown): Promise<any> {
+    return this.track("sale-write", async () => {
+      this.requireConfig();
+      const endpoint = new URL(this.url);
+      endpoint.pathname = endpoint.pathname.replace(
+        /dispatch_api\.php$/,
+        "dispatch_sale.php",
+      );
+      const controller = new AbortController();
+      this.controllers.add(controller);
+      const timer = setTimeout(() => controller.abort(), 20000);
+      try {
+        let response: Response;
+        try {
+          response = await this.fetcher(endpoint, {
+            method,
+            headers: {
+              "X-Dispatch-Token": this.token,
+              Accept: "application/json",
+              ...(body ? { "Content-Type": "application/json" } : {}),
+            },
+            body: body ? JSON.stringify(body) : undefined,
+            redirect: "error",
+            signal: controller.signal,
+          });
+        } catch {
+          throw new CompanyErpError(
+            "SALE_NETWORK",
+            "ERP 판매 저장 결과를 확인하지 못했습니다. 같은 전표에서 저장을 다시 눌러 확인하세요.",
+            502,
+          );
+        }
+        const buf: Uint8Array[] = [];
+        let size = 0;
+        if (!response.body) throw new Error();
+        for await (const part of response.body) {
+          size += part.length;
+          if (size > 2 * 1024 * 1024) {
+            controller.abort();
+            throw new Error();
+          }
+          buf.push(part);
+        }
+        let data: any;
+        try {
+          data = JSON.parse(Buffer.concat(buf).toString("utf8"));
+        } catch {
+          throw new CompanyErpError(
+            "SALE_FORMAT",
+            "ERP 판매 연동 응답을 확인하지 못했습니다. dispatch_sale.php 설치와 연결 상태를 확인해 주세요.",
+            502,
+          );
+        }
+        if (!response.ok || data?.ok !== true) {
+          const error = new CompanyErpError(
+            "SALE_REJECTED",
+            data?.code === "WRITE_DISABLED"
+              ? "ERP 관리자 연결 설정에서 ‘앱 판매 작성 허용’을 먼저 켜 주세요."
+              : data?.code === "INPUT"
+                ? "ERP 품목·거래처·단가·수량을 확인해 주세요."
+                : data?.code === "REQUEST_CONFLICT"
+                  ? "이미 ERP에 저장한 전표와 다른 내용입니다. 기존 저장 내역을 확인해 주세요."
+                  : "ERP 판매 저장이 완료되지 않았습니다. 같은 전표에서 다시 확인해 주세요.",
+            response.status === 404
+              ? 503
+              : response.status >= 500
+                ? 502
+                : response.status === 409
+                  ? 409
+                  : 422,
+          );
+          (error as CompanyErpError & { safeToEdit?: boolean }).safeToEdit =
+            data?.safeToEdit === true &&
+            ["INPUT", "WRITE_DISABLED"].includes(data?.code);
+          throw error;
+        }
+        if (
+          data.schema !== 2 ||
+          typeof data.instanceId !== "string" ||
+          !/^[a-f0-9]{32}$/.test(data.instanceId)
+        )
+          throw new CompanyErpError(
+            "SALE_FORMAT",
+            "ERP 판매 연동 파일 버전이 맞지 않습니다. 최신 파일을 설치해 주세요.",
+            502,
+          );
+        this.lastError = null;
+        return { ...data, sourceUrl: this.url };
+      } finally {
+        clearTimeout(timer);
+        this.controllers.delete(controller);
+      }
+    });
   }
   async close() {
     this.closed = true;

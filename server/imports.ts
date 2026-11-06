@@ -712,12 +712,43 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
         name: v.name.trim().slice(0, 200),
         quantity: Number(v.quantity),
         ...(v.code ? { code: String(v.code).slice(0, 100) } : {}),
+        ...Object.fromEntries(
+          ["specification", "pattern", "erpItemId", "remarks"]
+            .filter((key) => typeof v[key] === "string")
+            .map((key) => [key, v[key].slice(0, 200)]),
+        ),
+        ...Object.fromEntries(
+          [
+            "unitPrice",
+            "supplyAmount",
+            "totalAmount",
+            "discountRate",
+            "listPrice",
+          ]
+            .filter(
+              (key) =>
+                typeof v[key] === "number" &&
+                Number.isFinite(v[key]) &&
+                v[key] >= 0 &&
+                v[key] <= 1e14,
+            )
+            .map((key) => [key, v[key]]),
+        ),
+        ...(["taxable", "exempt"].includes(v.taxType)
+          ? { taxType: v.taxType }
+          : {}),
+        ...(["unit", "supply", "total"].includes(v.amountBasis)
+          ? { amountBasis: v.amountBasis }
+          : {}),
       })),
       lat,
       lng,
       ...(amount !== null ? { amount } : {}),
       ...(row.customerCode
         ? { customerCode: String(row.customerCode).slice(0, 100) }
+        : {}),
+      ...(row.erpCustomerId
+        ? { erpCustomerId: String(row.erpCustomerId).slice(0, 20) }
         : {}),
       ...(row.salesReference
         ? { salesReference: String(row.salesReference).slice(0, 200) }

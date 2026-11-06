@@ -48,6 +48,7 @@ import {
 import {
   EcountReadClient, EcountReadError, type EcountReadDeps,
 } from "./ecountRead.ts";
+import { CompanySaleService } from "./companySale.ts";
 import { CompanyErpClient, CompanyErpError, type CompanyErpDeps } from "./companyErp.ts";
 import { seedDemo } from "./demo.ts";
 import { createMapDocument } from "../src/mapDocument.ts";
@@ -102,6 +103,10 @@ export function createDispatchApp(
   const store = new Store(dataDir);
   const ecount = new EcountReadClient(store, options.ecount);
   const companyErp = new CompanyErpClient(store, options.companyErp);
+  const companySales = new CompanySaleService(store, companyErp, dataDir, (date) => {
+    notify("changed");
+    scheduleAddressLookup(date);
+  });
   mkdirSync(join(dataDir, "uploads"), { recursive: true, mode: 0o700 });
   const app = express(),
     server = createServer(app),
@@ -355,8 +360,16 @@ export function createDispatchApp(
       ? {
           ...route,
           stops: route.stops.map(
-            ({ amount, customerCode, salesReference, erpSourceKey, ...stop }) =>
-              stop,
+            ({ amount, customerCode, salesReference, erpSourceKey, erpCustomerId, ...stop }) => ({
+              ...stop,
+              items: stop.items.map(({ name, quantity, code, specification, pattern }) => ({
+                name,
+                quantity,
+                ...(code ? { code } : {}),
+                ...(specification ? { specification } : {}),
+                ...(pattern ? { pattern } : {}),
+              })),
+            }),
           ),
         }
       : null;
@@ -748,6 +761,23 @@ export function createDispatchApp(
       customers: store.one("SELECT COUNT(*) AS n FROM catalog_customers").n,
       products: store.one("SELECT COUNT(*) AS n FROM catalog_products").n,
     }),
+  );
+  app.get("/api/company-erp/sale-context", admin, async (_req, res) =>
+    res.json(await companySales.context()),
+  );
+  app.post("/api/company-erp/sale-requests", admin, (req, res) =>
+    res.status(201).json(companySales.create((req as AuthRequest).user.userId)),
+  );
+  app.get("/api/company-erp/sale-requests", admin, (req, res) =>
+    res.json(companySales.pending((req as AuthRequest).user.userId)),
+  );
+  app.get("/api/company-erp/sale-requests/:id", admin, (req, res) =>
+    res.json(companySales.detail(String(req.params.id), (req as AuthRequest).user.userId)),
+  );
+  app.post("/api/company-erp/sale-requests/:id/commit", admin, async (req, res) =>
+    res.status(201).json(await companySales.save(
+      String(req.params.id), (req as AuthRequest).user.userId, req.body.row,
+    )),
   );
   app.post("/api/company-erp/catalog/:kind/sync", admin, async (req, res) => {
     assert(["customers", "products"].includes(String(req.params.kind)), "조회 항목을 확인해 주세요.");
@@ -2031,6 +2061,7 @@ export function createDispatchApp(
     store,
     close: async () => {
       closing = true;
+      await companySales.close();
       await companyErp.close();
       await ecount.close();
       clearInterval(liveTimer);

@@ -63,8 +63,8 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
         $id = 'p.id';
     } elseif ($kind === 'products') {
         $from = 'erp_items i'; $where = 'i.is_active=1';
-        $fields = 'i.id, i.item_code, i.name, i.spec, i.wholesale_price, i.updated_at';
-        $select = 'i.id, i.item_code AS code, i.name, i.spec AS specification, i.wholesale_price AS unitPrice';
+        $fields = 'i.id, i.item_code, i.name, i.spec, i.wholesale_price, i.pattern_name, i.tax_type, i.retail_price, i.updated_at';
+        $select = 'i.id, i.item_code AS code, i.name, i.spec AS specification, i.wholesale_price AS unitPrice, i.pattern_name AS pattern, i.tax_type AS taxType, i.retail_price AS listPrice';
         if (trim($q) !== '') {
             $where .= " AND CONCAT_WS(' ', i.item_code, i.name, i.spec, i.brand, i.pattern_name) LIKE ?";
             $args[] = '%' . addcslashes(trim($q), '%_\\') . '%';
@@ -75,7 +75,12 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
         $where = "t.trade_type='sale' AND t.trade_date=? AND t.status='confirmed'";
         $args = [$date];
         $fields = "t.id, t.trade_no, t.trade_date, t.customer_name, t.total_amount, t.memo, t.updated_at, $code, p.name, p.address, p.phone";
-        $select = "t.id, t.trade_no AS reference, t.trade_date AS saleDate, t.status, $code AS customerCode, COALESCE(NULLIF(p.name,''),t.customer_name) AS recipient, COALESCE(p.address,'') AS address, COALESCE(p.phone,'') AS phone, t.total_amount AS amount, t.memo AS notes, t.updated_at AS updatedAt";
+        $tradeCols = $pdo->query('SHOW COLUMNS FROM erp_trades')->fetchAll(PDO::FETCH_COLUMN);
+        $shipAddress = in_array('delivery_addr',$tradeCols,true) ? "COALESCE(NULLIF(t.delivery_addr,''),p.address,'')" : "COALESCE(p.address,'')";
+        $shipPhone = in_array('delivery_phone',$tradeCols,true) ? "COALESCE(NULLIF(t.delivery_phone,''),p.phone,'')" : "COALESCE(p.phone,'')";
+        $shipRecipient = in_array('delivery_recipient',$tradeCols,true) ? "COALESCE(NULLIF(t.delivery_recipient,''),NULLIF(p.name,''),t.customer_name)" : "COALESCE(NULLIF(p.name,''),t.customer_name)";
+        $fields .= ', '.$shipAddress.', '.$shipPhone.', '.$shipRecipient;
+        $select = "t.id, t.trade_no AS reference, t.trade_date AS saleDate, t.status, $code AS customerCode, $shipRecipient AS recipient, $shipAddress AS address, $shipPhone AS phone, t.total_amount AS amount, t.memo AS notes, t.updated_at AS updatedAt";
         $id = 't.id';
         $st = $pdo->prepare("SELECT status, COUNT(*) AS n FROM erp_trades WHERE trade_type='sale' AND trade_date=? AND status IN ('draft','canceled') GROUP BY status");
         $st->execute([$date]); foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) $excluded[$r['status']] = (int)$r['n'];
@@ -83,9 +88,11 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
     $digest = bd_digest($pdo, $from, $where, $args, $fields);
     $parts = [$instance, $kind, $date, trim($q), $digest];
     if ($kind === 'sales') {
+        $digestCols=$pdo->query('SHOW COLUMNS FROM erp_trade_lines')->fetchAll(PDO::FETCH_COLUMN);
+        $extraFields='';foreach(['pattern_name','dc_rate','list_price','dispatch_total','dispatch_amount_basis'] as $field)if(in_array($field,$digestCols,true))$extraFields.=',l.'.$field;
         $parts[] = bd_digest($pdo,
             'erp_trade_lines l JOIN erp_trades t ON t.id=l.trade_id LEFT JOIN erp_items i ON i.id=l.item_id',
-            $where, $args, 'l.id,l.trade_id,l.line_no,l.item_name,l.spec,l.qty,i.item_code');
+            $where, $args, 'l.id,l.trade_id,l.line_no,l.item_name,l.spec,l.qty,l.unit_price,l.amount,l.tax_type,l.memo,i.item_code,i.pattern_name'.$extraFields);
     }
     $snapshot = hash('sha256', json_encode($parts));
     if (isset($query['snapshot']) && (!is_string($query['snapshot']) || !hash_equals($snapshot, $query['snapshot']))) throw new DomainException('조회 도중 ERP 자료가 변경되었습니다. 다시 가져와 주세요.');
@@ -95,10 +102,16 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
     foreach ($rows as &$row) $row['id'] = (string)$row['id']; unset($row);
     if ($kind === 'sales' && $rows) {
         $ids = array_column($rows, 'id'); $holders = implode(',', array_fill(0, count($ids), '?'));
-        $st = $pdo->prepare("SELECT l.id, l.trade_id, l.item_name AS name, l.spec AS specification, l.qty AS quantity, COALESCE(i.item_code,'') AS code FROM erp_trade_lines l LEFT JOIN erp_items i ON i.id=l.item_id WHERE l.trade_id IN ($holders) ORDER BY l.trade_id,l.line_no,l.id LIMIT 10001");
+        $lineCols=$pdo->query('SHOW COLUMNS FROM erp_trade_lines')->fetchAll(PDO::FETCH_COLUMN);
+        $pattern=in_array('pattern_name',$lineCols,true)?'l.pattern_name':'i.pattern_name';
+        $dc=in_array('dc_rate',$lineCols,true)?'l.dc_rate / 100':'NULL';
+        $list=in_array('list_price',$lineCols,true)?'l.list_price':'NULL';
+        $gross=in_array('dispatch_total',$lineCols,true)?'l.dispatch_total':'NULL';
+        $basis=in_array('dispatch_amount_basis',$lineCols,true)&&in_array('dispatch_total',$lineCols,true)?"CASE WHEN l.dispatch_total IS NULL THEN 'supply' ELSE l.dispatch_amount_basis END":"'supply'";
+        $st = $pdo->prepare("SELECT l.id, l.trade_id, l.item_id AS erpItemId, l.item_name AS name, l.spec AS specification, l.qty AS quantity, l.unit_price AS unitPrice, l.amount AS supplyAmount, l.tax_type AS taxType, l.memo AS remarks, $pattern AS pattern, $dc AS discountRate, $list AS listPrice, $gross AS totalAmount, $basis AS amountBasis, COALESCE(i.item_code,'') AS code FROM erp_trade_lines l LEFT JOIN erp_items i ON i.id=l.item_id WHERE l.trade_id IN ($holders) ORDER BY l.trade_id,l.line_no,l.id LIMIT 10001");
         $st->execute($ids); $lines = $st->fetchAll(PDO::FETCH_ASSOC);
         if (count($lines) > 10000) throw new LengthException('품목이 너무 많습니다. 조회 범위를 줄여 주세요.');
-        $byId = []; foreach ($lines as $line) { $tradeId = $line['trade_id']; unset($line['trade_id']); $line['id'] = (string)$line['id']; $byId[$tradeId][] = $line; }
+        $byId = []; foreach ($lines as $line) { $tradeId = $line['trade_id']; unset($line['trade_id']); $line['id'] = (string)$line['id']; $line['erpItemId']=(string)$line['erpItemId']; $byId[$tradeId][] = $line; }
         foreach ($rows as &$row) $row['items'] = $byId[$row['id']] ?? []; unset($row);
     }
     return ['schema' => 1, 'ok' => true, 'kind' => $kind, 'instanceId' => $instance, 'snapshot' => $snapshot,
