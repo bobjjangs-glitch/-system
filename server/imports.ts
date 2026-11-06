@@ -700,7 +700,7 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
       throw new Error(`${i + 1}번 금액을 확인해 주세요.`);
     if (
       row.erpSourceKey &&
-      !/^ecount-sale-[a-f0-9]{64}$/.test(row.erpSourceKey)
+      !/^(ecount|company)-sale-[a-f0-9]{64}$/.test(row.erpSourceKey)
     )
       throw new Error("판매전표 번호를 확인해 주세요.");
     return {

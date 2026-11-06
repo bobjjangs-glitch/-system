@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { api } from "./api";
 import { Sheet, Field, Button, C, s } from "./ui";
-import { readTime } from "./ecountTypes";
+import { readTime, type ErpStatus } from "./ecountTypes";
 import type { CatalogEntry } from "./catalogTypes";
 function CatalogRow({
   row,
@@ -26,11 +26,15 @@ function CatalogRow({
       <Text style={s.h3}>{row.name}</Text>
       <Text style={[s.muted, { marginTop: 5 }]}>
         {row.code ? row.code + " · " : ""}
-        {row.source === "ecount-api"
-          ? `API 조회 자료 · ${readTime(row.updatedAt)}`
-          : row.source === "ecount"
-            ? "E카운트 엑셀 자료"
-            : "저장한 배송 내역"}
+        {row.source === "company-erp-live"
+          ? `회사 ERP 실시간 조회 · ${readTime(row.updatedAt)}`
+          : row.source === "company-erp"
+            ? `회사 ERP 저장 자료 · ${readTime(row.updatedAt)}`
+            : row.source === "ecount-api"
+              ? `API 조회 자료 · ${readTime(row.updatedAt)}`
+              : row.source === "ecount"
+                ? "E카운트 엑셀 자료"
+                : "저장한 배송 내역"}
       </Text>
       {kind === "customers" ? (
         <>
@@ -150,10 +154,25 @@ export default function CatalogPicker({
   const [query, setQuery] = useState(""),
     [rows, setRows] = useState<CatalogEntry[]>([]),
     [error, setError] = useState(""),
-    [loading, setLoading] = useState(false);
+    [loading, setLoading] = useState(false),
+    [live, setLive] = useState<boolean | null>(null),
+    [legacyLookup, setLegacyLookup] = useState(false);
   const generation = useRef(0);
   useEffect(() => {
+    if (!kind) return;
+    let active = true;
+    api<ErpStatus>("/api/erp/status")
+      .then((value) => {
+        if (active) setLive(!!value.company?.configured);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [kind]);
+  useEffect(() => {
     setQuery("");
+    setLegacyLookup(false);
     setRows([]);
     setError("");
   }, [kind]);
@@ -192,8 +211,21 @@ export default function CatalogPicker({
       title={kind === "customers" ? "거래처 검색" : "품목 검색"}
       onClose={onClose}
     >
-      {kind === "products" && <ProductLookup onSelect={onSelect} />}
-      <Text style={[s.h3, { marginBottom: 12 }]}>저장 자료 검색</Text>
+      {kind === "products" && live === false && (
+        <View style={{ gap: 12, marginBottom: 16 }}>
+          <Button
+            title={
+              legacyLookup ? "E카운트 조회 접기" : "E카운트 품목조회(별도)"
+            }
+            secondary
+            onPress={() => setLegacyLookup(!legacyLookup)}
+          />
+          {legacyLookup && <ProductLookup onSelect={onSelect} />}
+        </View>
+      )}
+      <Text style={[s.h3, { marginBottom: 12 }]}>
+        {live ? "회사 ERP에서 바로 검색" : "저장 자료 검색"}
+      </Text>
       <Field
         label={
           kind === "customers"
@@ -205,9 +237,11 @@ export default function CatalogPicker({
         placeholder="검색어를 입력해 주세요"
       />
       <Text style={[s.muted, { marginBottom: 16 }]}>
-        {kind === "customers"
-          ? "거래처 조회 API가 없어 엑셀 자료와 저장한 배송 내역에서 검색합니다."
-          : "마지막 API 조회 목록·엑셀 자료·저장한 배송 내역에서 검색합니다. 실시간 조회는 위의 품목코드 조회를 이용하세요."}{" "}
+        {live
+          ? "검색할 때마다 회사 ERP의 현재 자료를 조회합니다. 조회 실패 시 이전 자료로 바꾸어 표시하지 않습니다."
+          : kind === "customers"
+            ? "저장된 엑셀 자료와 배송 내역에서 검색합니다. 회사 ERP 연결 후에는 바로 조회할 수 있습니다."
+            : "마지막 API 조회 목록·엑셀 자료·저장한 배송 내역에서 검색합니다. 실시간 조회는 위의 품목코드 조회를 이용하세요."}{" "}
         최대 30개를 표시해요.
       </Text>
       {loading && <ActivityIndicator color={C.green} />}
@@ -218,8 +252,9 @@ export default function CatalogPicker({
       )}
       {!loading && !error && !rows.length && (
         <Text style={s.muted}>
-          저장된 검색 결과가 없습니다. 직접 입력하거나 전표 화면에서 자료를
-          가져와 주세요.
+          {live
+            ? "회사 ERP에서 일치하는 자료가 없습니다. 검색어를 바꾸거나 ERP에 등록되어 있는지 확인해 주세요."
+            : "저장된 검색 결과가 없습니다. 직접 입력하거나 전표 화면에서 자료를 가져와 주세요."}
         </Text>
       )}
       {kind &&

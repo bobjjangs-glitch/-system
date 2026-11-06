@@ -17,3 +17,4 @@ expo-env.d.ts
 /android/
 /ios/
 .DS_Store
+**/dispatch_bridge.private.php

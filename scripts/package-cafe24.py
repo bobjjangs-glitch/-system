@@ -14,7 +14,7 @@ selected = [
     "package.json", "package-lock.json", "App.tsx", "app.json", "eas.json",
     "tsconfig.json", ".env.example", ".gitignore", "README.md", "render.yaml",
     "src", "server", "deploy", "docs", "dist", "assets", "plugins", "patches", "native-tests",
-    "scripts/install-cloud.sh", "scripts/package-cafe24.py", "scripts/cloud-android-env.sh", "scripts/setup-cloud-android.py", "scripts/build-ldplayer-apk.sh", "scripts/build-android-phone-apk.sh", "scripts/verify-location-service-apk.py",
+    "scripts/install-cloud.sh", "scripts/package-cafe24.py", "scripts/package-company-erp.py", "scripts/cloud-android-env.sh", "scripts/setup-cloud-android.py", "scripts/build-ldplayer-apk.sh", "scripts/build-android-phone-apk.sh", "scripts/verify-location-service-apk.py",
 ]
 files = []
 for entry in selected:
@@ -29,7 +29,7 @@ for path in files:
         raise SystemExit(f"Symlinked release input is not supported: {relative}")
     if path.name.startswith(".env") and path.name != ".env.example":
         raise SystemExit(f"Private environment file cannot be packaged: {relative}")
-    if path.suffix in {".key", ".pem", ".p12", ".pfx", ".sqlite", ".db", ".log"} or path.name in {"server.env", "credentials.json"}:
+    if path.suffix in {".key", ".pem", ".p12", ".pfx", ".sqlite", ".db", ".log"} or path.name in {"server.env", "credentials.json", "dispatch_bridge.private.php"}:
         raise SystemExit(f"Machine-local or private file cannot be packaged: {relative}")
     if any(part in {"node_modules", ".git", ".local", ".expo", "uploads"} for part in relative.parts):
         raise SystemExit(f"Machine-local directory cannot be packaged: {relative}")

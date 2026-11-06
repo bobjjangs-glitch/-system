@@ -48,6 +48,7 @@ import {
 import {
   EcountReadClient, EcountReadError, type EcountReadDeps,
 } from "./ecountRead.ts";
+import { CompanyErpClient, CompanyErpError, type CompanyErpDeps } from "./companyErp.ts";
 import { seedDemo } from "./demo.ts";
 import { createMapDocument } from "../src/mapDocument.ts";
 import { extractReceipt } from "../src/receiptText.ts";
@@ -92,6 +93,7 @@ export function createDispatchApp(
     test?: boolean;
     autoGeocode?: boolean;
     ecount?: EcountReadDeps;
+    companyErp?: CompanyErpDeps;
   } = {},
 ) {
   const dataDir = resolve(
@@ -99,6 +101,7 @@ export function createDispatchApp(
   );
   const store = new Store(dataDir);
   const ecount = new EcountReadClient(store, options.ecount);
+  const companyErp = new CompanyErpClient(store, options.companyErp);
   mkdirSync(join(dataDir, "uploads"), { recursive: true, mode: 0o700 });
   const app = express(),
     server = createServer(app),
@@ -724,22 +727,21 @@ export function createDispatchApp(
       meta: undefined,
     });
   });
-  app.get("/api/catalog/:kind", admin, (req, res) => {
+  app.get("/api/catalog/:kind", admin, async (req, res) => {
     assert(
       ["customers", "products"].includes(String(req.params.kind)),
       "자료 종류를 확인해 주세요.",
     );
     res.json(
-      searchCatalog(
-        store,
-        req.params.kind as "customers" | "products",
-        typeof req.query.q === "string" ? req.query.q : "",
-      ),
+      companyErp.status().configured
+        ? await companyErp.search(req.params.kind as "customers" | "products", typeof req.query.q === "string" ? req.query.q : "")
+        : searchCatalog(store, req.params.kind as "customers" | "products", typeof req.query.q === "string" ? req.query.q : ""),
     );
   });
   app.get("/api/erp/status", admin, (_req, res) =>
     res.json({
-      mode: "ecount-api",
+      mode: companyErp.status().configured ? "company-erp" : "ecount-api",
+      company: companyErp.status(),
       direct: ecount.status(),
       salesDateFilter: true,
       regionalDispatch: true,
@@ -747,6 +749,30 @@ export function createDispatchApp(
       products: store.one("SELECT COUNT(*) AS n FROM catalog_products").n,
     }),
   );
+  app.post("/api/company-erp/catalog/:kind/sync", admin, async (req, res) => {
+    assert(["customers", "products"].includes(String(req.params.kind)), "조회 항목을 확인해 주세요.");
+    res.json(await companyErp.sync(req.params.kind as "customers" | "products"));
+  });
+  app.post("/api/company-erp/sales/fetch", admin, async (req, res) => {
+    assert(typeof req.body.salesDate === "string", "가져올 판매일자를 입력해 주세요.");
+    const salesDate = dateValue(req.body.salesDate), date = dateValue(req.body.serviceDate);
+    const result = await companyErp.sales(salesDate);
+    if (!result.drafts.length) return res.json({
+      ...result, empty: true,
+      message: result.duplicateDocuments === result.sourceCount && result.sourceCount > 0
+        ? "모든 판매전표가 이미 등록되어 있습니다. 중복으로 가져오지 않았습니다."
+        : `${salesDate}에 새로 가져올 확정 배송 전표가 없습니다.`,
+    });
+    const importId = id(), storedName = importId + ".json", fileName = `회사ERP_판매조회_${salesDate}.json`;
+    writeFileSync(join(dataDir, "uploads", storedName), JSON.stringify(result), {mode: 0o600, flag: "wx"});
+    try {
+      store.run("INSERT INTO imports(id,fileName,storedName,mime,drafts,serviceDate,createdAt,meta) VALUES(?,?,?,?,?,?,?,?)",
+        importId, fileName, storedName, "application/json", JSON.stringify(result.drafts), date, new Date().toISOString(),
+        JSON.stringify({source:"company-erp", warnings:result.recognitionWarnings, salesDate, sourceReadAt:result.sourceReadAt}));
+    } catch (e) {try {unlinkSync(join(dataDir,"uploads",storedName));} catch {} throw e;}
+    notify("changed");
+    res.status(201).json({...result, id:importId, fileName, serviceDate:date, rawText:"", status:"review"});
+  });
   app.post("/api/erp/products/sync", admin, async (_req, res) => {
     res.json(await ecount.syncProducts());
   });
@@ -1095,7 +1121,7 @@ export function createDispatchApp(
         "판매전표 번호가 원본과 일치하지 않습니다.",
         409,
       );
-      if (JSON.parse(current.meta || "{}").source === "ecount-excel")
+      if (["ecount-excel", "company-erp"].includes(JSON.parse(current.meta || "{}").source))
         assert(
           rows.every(
             (row) => row.erpSourceKey && allowed.has(row.erpSourceKey),
@@ -1975,8 +2001,8 @@ export function createDispatchApp(
       res: Response,
       _next: NextFunction,
     ) => {
-      if (error instanceof EcountReadError) {
-        if (error.retryAfter) res.set("Retry-After", String(error.retryAfter));
+      if (error instanceof EcountReadError || error instanceof CompanyErpError) {
+        if (error instanceof EcountReadError && error.retryAfter) res.set("Retry-After", String(error.retryAfter));
         return res.status(error.status).json({ error: error.message, code: error.code });
       }
       if (error instanceof multer.MulterError)
@@ -2005,6 +2031,7 @@ export function createDispatchApp(
     store,
     close: async () => {
       closing = true;
+      await companyErp.close();
       await ecount.close();
       clearInterval(liveTimer);
       await Promise.allSettled(addressJobs);

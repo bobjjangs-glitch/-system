@@ -1,20 +1,21 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
+import CompanyErpPanel from "./CompanyErpPanel";
 import { readTime, type ErpStatus } from "./ecountTypes";
 import { api } from "./api";
 import { createImportForm } from "./importUpload";
 import { Button, Card, C, s, Field } from "./ui";
 import { validSalesDate } from "./salesReference";
 import type { ShipmentInput } from "../server/types";
-type SalesBatch = {
+export type SalesBatch = {
   id: string;
   fileName: string;
   drafts: ShipmentInput[];
   serviceDate: string;
   recognitionWarnings?: string[];
 };
-export default function ErpImportPanel({
+function EcountImportPanel({
   date,
   disabled,
   onReview,
@@ -275,5 +276,26 @@ export default function ErpImportPanel({
         </Text>
       )}
     </Card>
+  );
+}
+
+export default function ErpImportPanel(props: {
+  date: string;
+  disabled: boolean;
+  onReview: (batch: SalesBatch) => void;
+}) {
+  const [legacy, setLegacy] = useState(false);
+  return (
+    <View style={{ gap: 12 }}>
+      <CompanyErpPanel {...props} />
+      <Button
+        title={
+          legacy ? "기존 가져오기 접기" : "E카운트 API · 엑셀 파일 가져오기"
+        }
+        secondary
+        onPress={() => setLegacy(!legacy)}
+      />
+      {legacy && <EcountImportPanel {...props} />}
+    </View>
   );
 }

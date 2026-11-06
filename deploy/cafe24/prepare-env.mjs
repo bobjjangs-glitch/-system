@@ -42,6 +42,8 @@ const contents = [
   "ECOUNT_USER_ID=",
   "ECOUNT_API_CERT_KEY=",
   "ECOUNT_ENV=production",
+  "COMPANY_ERP_API_URL=https://bobjjangs1231.dothome.co.kr/tire/erp/dispatch_api.php",
+  "COMPANY_ERP_TOKEN=",
   "",
 ].join("\n");
 writeFileSync(envFile, contents, { mode: 0o600, flag: "wx" });
