@@ -121,6 +121,14 @@ export function invoiceTotals(items: Item[]) {
     complete: complete && items.length > 0 && won(supply) && won(total),
   };
 }
+/** Show observed totals independently: a missing net or tax field must not turn a known printed gross total into zero. */
+export function invoiceDisplayTotals(items: Item[]) {
+  const sum = (field: "supplyAmount" | "totalAmount") => items.length && items.every(i => won(i[field]))
+    ? items.reduce((n,i) => n + i[field]!,0) : null;
+  const supply=sum("supplyAmount"), total=sum("totalAmount");
+  const taxKnown=items.every(i => i.taxType === "taxable" || i.taxType === "exempt");
+  return {supply,total,vat:taxKnown && supply!=null && total!=null && total>=supply ? total-supply : null};
+}
 export function validateInvoiceItems(items: Item[]): Item[] {
   if (!Array.isArray(items) || !items.length || items.length > 200)
     throw new Error("품목은 1개 이상 200개 이하로 입력해 주세요.");

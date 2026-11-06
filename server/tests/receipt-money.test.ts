@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { extractReceipt, type ReceiptLayout } from "../../src/receiptText.ts";
 import { receiptWon } from "../../src/receiptMoney.ts";
 import { mergeReceiptAutofill } from "../../src/receiptAutofill.ts";
-import { calculateInvoiceLine, changeInvoiceNumber } from "../../src/invoiceMath.ts";
+import { calculateInvoiceLine, changeInvoiceNumber, invoiceDisplayTotals } from "../../src/invoiceMath.ts";
 const cell=(text:string,x:number,y:number,width=.06)=>({text,x,y,width,height:.02});
 const layout = (): ReceiptLayout => ({ width:1000,height:1400,lines:[
  cell("품명",.05,.30,.20),cell("수량",.37,.30),cell("단가",.47,.30),cell("금액",.61,.30),cell("합계",.75,.30),cell("⊙공장도가",.88,.30,.10),
@@ -38,4 +38,10 @@ test("사진 자동 채우기·동일 품목 재인식도 금액을 유지하고
 test("원화 숫자 보정은 숫자 칸에 한정하고 애매한 소수·전화·계좌·문장은 금액으로 만들지 않는다",()=>{
  for(const v of ["40,909","４０，９０９","40.909","4O,9O9"])assert.equal(receiptWon(v),40909);
  for(const v of ["042-123-4567","465501-04-000000","가격 문의","1.5","90,000 80,000","-1000","OIOO"])assert.equal(receiptWon(v),null,v);
+});
+
+test("단가·인쇄 합계만 있는 전표도 화면 총합계는 736,000원을 유지하고 미확인 공급가액·부가세를 0원으로 표시하지 않는다",()=>{
+ const item={name:"가상 타이어",quantity:2,unitPrice:368000,totalAmount:736000,priceOrigin:"ocr" as const};
+ assert.deepEqual(invoiceDisplayTotals([item]),{supply:null,vat:null,total:736000});
+ assert.deepEqual(invoiceDisplayTotals([{...item,unitPrice:40909,supplyAmount:81818,totalAmount:90000,taxType:"taxable"}]),{supply:81818,vat:8182,total:90000});
 });

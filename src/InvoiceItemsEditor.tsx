@@ -13,7 +13,7 @@ import {
   calculateInvoiceLine,
   changeInvoiceNumber,
   numberInput,
-  invoiceTotals,
+  invoiceDisplayTotals,
 } from "./invoiceMath";
 import { Button, C, s } from "./ui";
 const columns = [36, 44, 118, 240, 145, 76, 100, 110, 110, 130, 110, 78];
@@ -86,7 +86,7 @@ export default function InvoiceItemsEditor({
   const compact = useWindowDimensions().width < 720;
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const shown = items.map(calculateInvoiceLine);
-  const total = invoiceTotals(shown),
+  const total = invoiceDisplayTotals(shown),
     set = (i: number, item: Item) =>
       onChange(items.map((x, j) => (j === i ? item : x)));
   const numeric = (
@@ -572,12 +572,11 @@ export default function InvoiceItemsEditor({
         }}
       >
         <Text style={s.muted}>
-          공급가액 {total.supply.toLocaleString()}원 · 부가세{" "}
-          {total.vat.toLocaleString()}원
+          {items.some(item => item.priceOrigin === "ocr") ? "금액(인쇄값)" : "공급가액"} {total.supply == null ? "확인 필요" : total.supply.toLocaleString()+"원"} · 부가세{" "}
+          {total.vat == null ? "확인 필요" : total.vat.toLocaleString()+"원"}
         </Text>
         <Text style={s.h3}>
-          합계 {total.total.toLocaleString()}원
-          {!total.complete ? " · 미입력 항목 확인" : ""}
+          합계 {total.total == null ? "확인 필요" : total.total.toLocaleString()+"원"}
         </Text>
       </View>
     </View>
