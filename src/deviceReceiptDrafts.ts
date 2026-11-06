@@ -207,6 +207,12 @@ async function writeDraft(draft: DeviceReceiptDraft) {
         ...(item.code ? { code: item.code } : {}),
         ...Object.fromEntries(
           [
+            "brand",
+            "dot",
+            "vatAmount",
+            "vatRate",
+            "discountRateRaw",
+            "nativeFields",
             "specification",
             "pattern",
             "erpItemId",

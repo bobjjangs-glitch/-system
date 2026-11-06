@@ -2,6 +2,24 @@
 /** Bareun Dispatch v1: read-only queries against the existing tire ERP schema. */
 declare(strict_types=1);
 
+foreach(['dispatch_native.php','dispatch_catalog_native.php'] as $adapterFile) {
+    if(is_file(__DIR__.'/'.$adapterFile))require_once __DIR__.'/'.$adapterFile;
+}
+if(!class_exists('DispatchNativeReadError',false)) {
+    final class DispatchNativeReadError extends RuntimeException {
+        public string $nativeCode;
+        public function __construct(string $code,string $message){parent::__construct($message);$this->nativeCode=$code;}
+    }
+}
+function bd_native_mode(PDO $pdo): bool {
+    if(!is_file(dirname(__DIR__).'/native_trade_edit.php'))return false;
+    if(!function_exists('bd_native_ready')||!function_exists('bd_native_catalog_read'))throw new DispatchNativeReadError('NATIVE_ADAPTER_MISSING','실제 ERP 조회를 위한 연동 파일이 빠졌습니다. 최신 ZIP의 PHP 파일을 모두 함께 적용해 주세요.');
+    if(!bd_native_ready($pdo))bd_native_problem('NATIVE_SCHEMA','실제 ERP 판매 자료 저장소를 확인할 수 없습니다. 원본 이관 DB 설정을 확인해 주세요.');
+    return true;
+}
+function bd_legacy_available(PDO $pdo): bool {
+    try{bd_tables($pdo);return true;}catch(UnexpectedValueException $e){return false;}
+}
 function bd_fail(int $status, string $message): void {
     http_response_code($status);
     echo json_encode(['ok' => false, 'error' => $message], JSON_UNESCAPED_UNICODE);
@@ -69,6 +87,16 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
     $q = $query['q'] ?? ''; $date = $query['date'] ?? '';
     if (!is_string($q) || strlen($q) > 400) throw new InvalidArgumentException('검색어를 줄여 주세요.');
     if ($kind === 'sales' && (!is_string($date) || !bd_date($date))) throw new InvalidArgumentException('판매일자를 YYYY-MM-DD 형식으로 입력해 주세요.');
+    $requestedSource=$query['sourceSystem']??'';
+    if(!is_string($requestedSource)||!in_array($requestedSource,['','legacy','native-archive'],true))throw new InvalidArgumentException('ERP 자료 구분을 확인해 주세요.');
+    $native=bd_native_mode($pdo);
+    if($requestedSource==='native-archive'&&!$native)throw new DomainException('이 ERP에는 원본 보관 전표 조회가 준비되지 않았습니다.');
+    if($native&&$requestedSource!=='legacy') {
+        if($kind!=='sales')return bd_native_catalog_read($pdo,$kind,$query,$instance);
+        if(in_array(($query['scope']??''),['all','invoice','capabilities'],true)){
+            $result=bd_native_read($pdo,$query,$instance);$result['legacyAvailable']=bd_legacy_available($pdo);return $result;
+        }
+    }
     if ($kind === 'sales' && in_array(($query['scope'] ?? ''), ['all','invoice'], true)) return bd_sales_documents($pdo, $query, $instance);
     if ($kind === 'sales' && ($query['scope'] ?? '') === 'capabilities') return bd_capabilities($pdo,$query,$instance);
     $code = $kind !== 'products' ? bd_code_column($pdo) : "''";
@@ -243,5 +271,5 @@ function bd_capabilities(PDO $pdo,array $query,string $instance):array {
     $date=$query['date'];
     $st=bd_prepare($pdo,"SELECT COUNT(*) FROM erp_trades WHERE trade_type='sale' AND (DATE(trade_date)=? OR trade_no REGEXP ?)");$st->execute([$date,bd_reference_date_pattern($date)]);
     $matched=(int)$st->fetchColumn();
-    return ['schema'=>2,'ok'=>true,'kind'=>'sales','scope'=>'capabilities','invoiceVersion'=>2,'bridgeVersion'=>'1.12.0','referenceLookup'=>true,'compactTireSearch'=>true,'verticalInvoice'=>true,'instanceId'=>$instance,'snapshot'=>hash('sha256',$instance.$date),'total'=>0,'cursor'=>'0','nextCursor'=>null,'readAt'=>gmdate('Y-m-d\TH:i:s\Z'),'date'=>$date,'excluded'=>['draft'=>0,'canceled'=>0],'items'=>[],'matchedSales'=>$matched,'totalSales'=>(int)bd_query($pdo,"SELECT COUNT(*) FROM erp_trades WHERE trade_type='sale'")->fetchColumn(),'salesTable'=>bd_tables($pdo)['erp_trades']];
+    return ['schema'=>2,'ok'=>true,'kind'=>'sales','scope'=>'capabilities','invoiceVersion'=>2,'bridgeVersion'=>'1.13.0','referenceLookup'=>true,'compactTireSearch'=>true,'verticalInvoice'=>true,'instanceId'=>$instance,'snapshot'=>hash('sha256',$instance.$date),'total'=>0,'cursor'=>'0','nextCursor'=>null,'readAt'=>gmdate('Y-m-d\TH:i:s\Z'),'date'=>$date,'excluded'=>['draft'=>0,'canceled'=>0],'items'=>[],'matchedSales'=>$matched,'totalSales'=>(int)bd_query($pdo,"SELECT COUNT(*) FROM erp_trades WHERE trade_type='sale'")->fetchColumn(),'salesTable'=>bd_tables($pdo)['erp_trades']];
 }

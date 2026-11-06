@@ -102,6 +102,7 @@ export class Store {
       ["customerCode", "TEXT"],
       ["salesReference", "TEXT"],
       ["erpSourceKey", "TEXT"],
+      ["erpSourceSystem", "TEXT"],
     ])
       if (
         !this.db

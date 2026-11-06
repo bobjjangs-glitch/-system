@@ -22,7 +22,7 @@ export function quantityMilli(n: number): number | null {
 /** Each row preserves the value the operator edited; VAT totals sum the displayed rows. */
 export function calculateInvoiceLine(item: Item): Item {
   // An OCR reading is a printed observation, not permission to invent VAT or replace a conflicting digit.
-  if (item.priceOrigin === "ocr") return { ...item };
+  if (item.priceOrigin === "ocr" || item.priceOrigin === "native-erp") return { ...item };
   const q = quantityMilli(item.quantity),
     basis = item.amountBasis ?? "unit",
     taxable = item.taxType !== "exempt";
@@ -68,7 +68,7 @@ export function changeInvoiceNumber(
 ): Item {
   const next = {
     ...item,
-    ...(field !== "quantity" || item.priceOrigin === "ocr" ? { priceOrigin: "manual" as const } : {}),
+    ...(field !== "quantity" || item.priceOrigin === "ocr" || item.priceOrigin === "native-erp" ? { priceOrigin: "manual" as const } : {}),
     [field]: field === "quantity" && value === null ? NaN : value,
   };
   if (field === "factoryPrice") {
@@ -164,7 +164,7 @@ export function validateInvoiceItems(items: Item[]): Item[] {
       throw new Error(`${i + 1}행 금액 기준을 확인해 주세요.`);
     if (item.factoryPrice != null && !won(item.factoryPrice))
       throw new Error(`${i + 1}행 공장도가를 원 단위로 확인해 주세요.`);
-    const line = calculateInvoiceLine(item.priceOrigin === "ocr" ? { ...item, priceOrigin: "manual" } : item);
+    const line = calculateInvoiceLine(["ocr","native-erp"].includes(item.priceOrigin ?? "") ? { ...item, priceOrigin: "manual" } : item);
     if (
       !won(line.unitPrice) ||
       !won(line.supplyAmount) ||

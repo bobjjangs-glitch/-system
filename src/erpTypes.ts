@@ -26,6 +26,7 @@ export type ErpStatus = {
   products: number;
   salesDateFilter?: boolean;
   automaticCompanyCatalogs?: boolean;
+  nativeArchiveInvoices?: boolean;
   company?: CompanyErpConnection;
 };
 export function readTime(value?: string | null) {

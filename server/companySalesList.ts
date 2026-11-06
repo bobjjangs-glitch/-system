@@ -55,10 +55,10 @@ export class CompanySalesList {
     const result = await this.erp.browseSales(salesDate);
     return this.persistList(result, serviceDate);
   }
-  async reference(reference: string, serviceDate: string) {
+  async reference(reference: string, serviceDate: string, sourceSystem?: "native-archive" | "legacy") {
     if (!validSalesDate(serviceDate))
       failure("배송 예정일을 확인해 주세요.", 400);
-    const result = await this.erp.invoice(reference);
+    const result = await this.erp.invoice(reference,sourceSystem);
     return this.persistList(
       {
         documents: [result.document],
@@ -69,10 +69,10 @@ export class CompanySalesList {
       serviceDate,
     );
   }
-  async confirmReference(reference: string, fingerprint: string, serviceDate: string, delivery?: unknown) {
+  async confirmReference(reference: string, fingerprint: string, serviceDate: string, delivery?: unknown, sourceSystem?: "native-archive" | "legacy") {
     if (!/^[a-f0-9]{64}$/.test(fingerprint) || !validSalesDate(serviceDate))
       failure("확인할 전표와 배송일을 확인해 주세요.",400);
-    const result = await this.erp.invoice(reference);
+    const result = await this.erp.invoice(reference,sourceSystem);
     if (result.document.fingerprint !== fingerprint)
       failure("ERP 전표가 확인 중 변경되었습니다. 전표번호를 다시 눌러 최신 내용을 확인해 주세요.");
     const list = this.persistList({ documents: [result.document], salesDate: parseSalesReference(reference)?.date ?? result.document.saleDate,
@@ -196,7 +196,7 @@ export class CompanySalesList {
               if (
                 typeof o[k] !== "string" ||
                 o[k].length >
-                  (k === "notes" ? 2000 : k === "address" ? 500 : 40)
+                  (d.sourceSystem === "native-archive" ? (k === "phone" ? 500 : 8000) : k === "notes" ? 2000 : k === "address" ? 500 : 40)
               )
                 failure("배송주소·연락처·요청사항을 확인해 주세요.", 400);
               return [k, o[k].trim()];
@@ -256,7 +256,7 @@ export class CompanySalesList {
               child,
             );
           this.store.run(
-            "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey,erpSourceSystem) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             randomUUID(),
             child,
             row.recipient,
@@ -272,6 +272,7 @@ export class CompanySalesList {
             row.customerCode ?? null,
             doc.reference,
             doc.sourceKey,
+            row.erpSourceSystem ?? "legacy",
           );
           count++;
         }
@@ -300,7 +301,7 @@ export class CompanySalesList {
         const doc = list.documents.find(
           (d: SalesDocument) =>
             d.sourceKey === shipment.erpSourceKey ||
-            d.reference === shipment.salesReference,
+            (!shipment.erpSourceKey && (d.sourceSystem ?? "legacy") === (shipment.erpSourceSystem ?? "legacy") && d.reference === shipment.salesReference),
         );
         if (doc)
           return {
@@ -318,7 +319,7 @@ export class CompanySalesList {
       const doc = live.documents.find(
         (d) =>
           d.sourceKey === shipment.erpSourceKey ||
-          d.reference === shipment.salesReference,
+          (!shipment.erpSourceKey && (d.sourceSystem ?? "legacy") === (shipment.erpSourceSystem ?? "legacy") && d.reference === shipment.salesReference),
       );
       if (doc)
         return {

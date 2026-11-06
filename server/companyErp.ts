@@ -31,6 +31,12 @@ export type CompanyCatalogKind = "customers" | "products";
 export type CompanyCatalogEntry = {
   id: string;
   defaultChannel?: "retail" | "wholesale";
+  priceBasis?: "catalog-reference";
+  referenceRetailPrice?: number | null;
+  referenceWholesalePrice?: number | null;
+  referenceGrossPrice?: number | null;
+  referenceGrossSource?: string;
+  nativeHeader?: Record<string,string>;
   retailPrice?: number | null;
   wholesalePrice?: number | null;
   factoryPrice?: number | null;
@@ -49,6 +55,8 @@ export type CompanyCatalogEntry = {
 };
 type Kind = CompanyCatalogKind | "sales";
 type Page = {
+  sourceSystem?: "native-archive" | "legacy";
+  legacyAvailable?: boolean;
   scope?: string;
   dateMode?: string;
   invoiceVersion?: number;
@@ -294,6 +302,17 @@ export class CompanyErpClient {
         );
       }
       if (!response.ok) {
+        if (response.status >= 400 && /application\/json/i.test(response.headers.get("content-type") ?? "")) {
+          const parts: Uint8Array[]=[];let length=0;
+          try {
+            for await (const chunk of response.body ?? []) { length+=chunk.length;if(length>8192){controller.abort();break;}parts.push(chunk); }
+            if(length<=8192) {
+              const problem=JSON.parse(Buffer.concat(parts).toString("utf8"));
+              if(typeof problem.code==="string" && /^NATIVE_[A-Z_]+$/.test(problem.code) && typeof problem.error==="string" && problem.error.length<=500 && !problem.error.includes(this.token))
+                throw new CompanyErpError(problem.code,problem.error,502);
+            }
+          } catch (error) { if(error instanceof CompanyErpError)throw error; }
+        }
         await response.body?.cancel().catch(() => {});
         if (
           [401, 403].includes(response.status) &&
@@ -423,7 +442,7 @@ export class CompanyErpClient {
       if (wrong.length)
         throw new CompanyErpError(
           "FORMAT",
-          `회사 ERP 연동 응답의 ${wrong.join("·")} 항목이 맞지 않습니다. dispatch_api.php와 inc/dispatch_bridge.php를 같은 최신 ZIP으로 교체해 주세요.`,
+          `회사 ERP 연동 응답의 ${wrong.join("·")} 항목이 맞지 않습니다. 최신 ZIP의 PHP 파일을 모두 함께 교체해 주세요.`,
           502,
         );
       if (data.total > 100000)
@@ -465,7 +484,7 @@ export class CompanyErpClient {
       this.controllers.delete(controller);
     }
   }
-  private async all(kind: Kind, date?: string, scope?: string) {
+  private async all(kind: Kind, date?: string, scope?: string, sourceSystem?: "legacy") {
     const deadline = this.now() + 45000;
     let cursor = "0",
       snapshot = "",
@@ -481,6 +500,7 @@ export class CompanyErpClient {
           limit: kind === "sales" ? "50" : "500",
           ...(date ? { date } : {}),
           ...(scope ? { scope } : {}),
+          ...(sourceSystem ? { sourceSystem } : {}),
           ...(snapshot ? { snapshot } : {}),
         },
         deadline,
@@ -493,7 +513,7 @@ export class CompanyErpClient {
       )
         throw new CompanyErpError(
           "INVOICE_VERSION",
-          "ERP 판매목록·명세서 조회에는 최신 ERP 연동 파일이 필요합니다. PHP 5개와 Node 서버를 함께 업데이트해 주세요.",
+          "ERP 판매목록·명세서 조회에는 최신 ERP 연동 파일이 필요합니다. 최신 PHP 파일과 Node 서버를 함께 업데이트해 주세요.",
           502,
         );
       if (
@@ -530,6 +550,8 @@ export class CompanyErpClient {
           instanceId: instance,
           readAt: new Date(this.now()).toISOString(),
           excluded: latest.excluded,
+          sourceSystem: latest.sourceSystem,
+          legacyAvailable: latest.legacyAvailable,
         };
       }
       cursor = result.nextCursor;
@@ -557,6 +579,7 @@ export class CompanyErpClient {
             row.defaultChannel === "retail" ? "retail" : "wholesale",
           code,
           name,
+          ...(row.catalogSource === "native-master" ? {nativeHeader: Object.fromEntries(["partner_code","partner_name","ceo","phone","business_no","delivery","account","receivable"].filter(k=>typeof row.nativeHeader?.[k]==="string").map(k=>[k,text(row.nativeHeader[k],4000)]))} : {}),
           address: text(row.address ?? "", 500),
           phone: text(row.phone ?? "", 40),
           source: "company-erp",
@@ -568,11 +591,20 @@ export class CompanyErpClient {
           code,
           name,
           pattern: text(row.pattern ?? "", 80),
-          taxType: row.taxType === "exempt" ? "exempt" : "taxable",
+          ...(row.catalogSource === "native-master"
+            ? (row.taxType === "exempt" || row.taxType === "taxable" ? {taxType: row.taxType} : {})
+            : {taxType: row.taxType === "exempt" ? "exempt" as const : "taxable" as const}),
           retailPrice:
             row.retailPrice == null ? null : this.price(row.retailPrice),
           wholesalePrice:
             row.wholesalePrice == null ? null : this.price(row.wholesalePrice),
+          ...(row.priceBasis === "catalog-reference" ? {
+            priceBasis: "catalog-reference" as const,
+            referenceRetailPrice: this.price(row.referenceRetailPrice ?? null),
+            referenceWholesalePrice: this.price(row.referenceWholesalePrice ?? null),
+            referenceGrossPrice: this.price(row.referenceGrossPrice ?? null),
+            referenceGrossSource: text(row.referenceGrossSource ?? "",200),
+          } : {}),
           factoryPrice:
             row.factoryPrice == null ? null : this.price(row.factoryPrice),
           listPrice: row.listPrice == null ? null : this.price(row.listPrice),
@@ -851,7 +883,12 @@ export class CompanyErpClient {
       async () => {
         if (!validSalesDate(date))
           throw new CompanyErpError("DATE", "판매일자를 확인해 주세요.", 400);
-        const result = await this.all("sales", date, "all");
+        const primary = await this.all("sales", date, "all");
+        const secondary = primary.sourceSystem === "native-archive" && primary.legacyAvailable
+          ? await this.all("sales",date,"all","legacy") : null;
+        if (secondary && secondary.instanceId !== primary.instanceId)
+          throw new CompanyErpError("CHANGED", "조회 중 회사 ERP 연결이 변경되었습니다. 다시 조회해 주세요.", 409);
+        const result = { ...primary, items: [...primary.items, ...(secondary?.items ?? [])] };
         if (result.items.length > 2000)
           throw new CompanyErpError(
             "LIMIT",
@@ -887,7 +924,8 @@ export class CompanyErpClient {
       true,
     );
   }
-  async invoice(reference: string) {
+  async invoice(reference: string, sourceSystem?: "native-archive" | "legacy") {
+    if (sourceSystem !== undefined && !["native-archive","legacy"].includes(sourceSystem)) throw new CompanyErpError("SOURCE", "ERP 자료 구분을 확인해 주세요.",400);
     const input = reference.normalize("NFKC").replace(/\s+/g, "");
     if (!/^[A-Za-z0-9][A-Za-z0-9./_-]{0,59}$/.test(input))
       throw new CompanyErpError(
@@ -896,7 +934,7 @@ export class CompanyErpClient {
         400,
       );
     return this.track(
-      "invoice-" + input,
+      "invoice-" + (sourceSystem??"default") + "-" + input,
       async () => {
         const parsed = parseSalesReference(input),
           date =
@@ -904,15 +942,17 @@ export class CompanyErpClient {
             new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(
               new Date(this.now()),
             );
-        const result = await this.page(
+        let result = await this.page(
           "sales",
-          { scope: "invoice", reference: input, date, cursor: "0", limit: "2" },
+          { scope: "invoice", reference: input, date, cursor: "0", limit: "2", ...(sourceSystem ? {sourceSystem} : {}) },
           this.now() + 20000,
         );
+        if (!sourceSystem && result.sourceSystem === "native-archive" && result.total === 0 && result.legacyAvailable)
+          result = await this.page("sales",{scope:"invoice",reference:input,date,cursor:"0",limit:"2",sourceSystem:"legacy"},this.now()+20000);
         if (result.scope !== "invoice" || result.invoiceVersion !== 2)
           throw new CompanyErpError(
             "INVOICE_VERSION",
-            "전표번호 직접 조회에는 최신 ERP 연동 파일이 필요합니다. PHP 5개를 같은 ZIP으로 교체해 주세요.",
+            "전표번호 직접 조회에는 최신 ERP 연동 파일이 필요합니다. 최신 ZIP의 PHP 파일을 모두 함께 교체해 주세요.",
             502,
           );
         if (result.total === 0) {
@@ -938,10 +978,13 @@ export class CompanyErpClient {
             readSalesDate(String(row.saleDate ?? "").slice(0, 10)) ??
             parseSalesReference(row.reference)?.date ??
             date,
-          ref = parseSalesReference(row.reference);
+          ref = parseSalesReference(row.reference),
+          nativeReference = row.sourceSystem === "native-archive" ? String(row.sourceReference ?? "") : "",
+          nativeRef = parseSalesReference(nativeReference);
         if (
           String(row.reference).toUpperCase() !== input.toUpperCase() &&
-          (!parsed || ref?.canonical !== parsed.canonical)
+          nativeReference.toUpperCase() !== input.toUpperCase() &&
+          (!parsed || (ref?.canonical !== parsed.canonical && nativeRef?.canonical !== parsed.canonical))
         )
           throw new CompanyErpError(
             "INVOICE_MISMATCH",
@@ -974,7 +1017,7 @@ export class CompanyErpClient {
         if (r.scope !== "capabilities" || r.invoiceVersion !== 2)
           throw new CompanyErpError(
             "INVOICE_VERSION",
-            "ERP 연동 파일이 이전 버전입니다. 최신 PHP 파일 5개를 함께 교체해 주세요.",
+            "ERP 연동 파일이 이전 버전입니다. 최신 PHP 파일을 모두 함께 교체해 주세요.",
             502,
           );
         this.lastError = null;
@@ -986,6 +1029,8 @@ export class CompanyErpClient {
           date,
           matchedSales: (r as any).matchedSales ?? null,
           totalSales: (r as any).totalSales ?? null,
+          sourceSystem: r.sourceSystem ?? "legacy",
+          legacyAvailable: r.legacyAvailable ?? false,
           salesTable: (r as any).salesTable ?? null,
         };
       },

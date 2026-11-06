@@ -339,6 +339,10 @@ export function searchCatalog(
 }
 /** Include keys used before date normalization so older saved imports still deduplicate. */
 export function salesImportKeys(row: ShipmentInput): string[] {
+  // A migrated ERP document has its own immutable document identity. Its
+  // displayed sale number may also exist in the independent legacy ledger.
+  if (row.erpSourceSystem === "native-archive")
+    return row.erpSourceKey ? [row.erpSourceKey] : [];
   const parsed = parseSalesReference(row.salesReference),
     customer = row.customerCode || row.recipient;
   const refs = new Set([row.salesReference ?? ""]);
@@ -368,11 +372,12 @@ export function salesImportKeys(row: ShipmentInput): string[] {
   ];
 }
 export function savedManualSale(store: Store, row: ShipmentInput) {
+  if (row.erpSourceSystem === "native-archive") return false;
   const parsed = parseSalesReference(row.salesReference);
   if (!parsed) return false;
   return store
     .all(
-      "SELECT salesReference,customerCode,recipient FROM shipments WHERE erpSourceKey IS NULL AND salesReference IS NOT NULL",
+      "SELECT salesReference,customerCode,recipient FROM shipments WHERE erpSourceKey IS NULL AND salesReference IS NOT NULL AND COALESCE(erpSourceSystem,'legacy')!='native-archive'",
     )
     .some(
       (previous) =>

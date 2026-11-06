@@ -1,72 +1,83 @@
 #!/usr/bin/env python3
-"""Package only the five bridge PHP files, never existing ERP/private config."""
+"""Package seven bridge PHP files and a guide; never existing ERP helpers/private config."""
 import hashlib
 import pathlib
 import sys
 import zipfile
 root=pathlib.Path(__file__).resolve().parents[1]
 out=pathlib.Path(sys.argv[1] if len(sys.argv)>1 else '/workspace/artifacts/bareun-company-erp.zip')
-files=['dispatch_api.php','dispatch_setup.php','dispatch_sale.php','inc/dispatch_bridge.php','inc/dispatch_sales.php']
-readme='''바른배차 1.12.0 · 회사 닷홈 ERP 연결
+files=['dispatch_api.php','dispatch_setup.php','dispatch_sale.php','inc/dispatch_bridge.php','inc/dispatch_sales.php','inc/dispatch_native.php','inc/dispatch_catalog_native.php']
+readme='''바른배차 1.13.0(23) · 자체 ERP 원본 판매전표 연결
 
-ZIP의 tire/erp 폴더 구조를 FTP의 기존 tire/erp에 추가하세요.
-추가/교체 파일 5개: dispatch_api.php, dispatch_setup.php, dispatch_sale.php,
-inc/dispatch_bridge.php, inc/dispatch_sales.php. 다섯 파일을 함께 업데이트하세요.
-기존 inc/config.php 또는 다른 ERP 소스/DB 파일은 포함하지 않습니다.
+이 ZIP은 수동 교체용입니다. tire/erp 폴더 구조를 유지하여 FTP의 기존 tire/erp에
+다음 PHP 7개를 모두 함께 추가·교체하세요.
+ dispatch_api.php
+ dispatch_setup.php
+ dispatch_sale.php
+ inc/dispatch_bridge.php
+ inc/dispatch_sales.php
+ inc/dispatch_native.php
+ inc/dispatch_catalog_native.php
+기존 inc/config.php, inc/dispatch_bridge.private.php, native_trade_edit.php 및
+원래 ERP 조회 도우미는 교체하지 않습니다. 이 ZIP에 비밀키·DB 설정·사설 원본
+ERP 소스는 포함하지 않습니다. 자동 설치 ZIP은 별도 제공됩니다.
 
-1. ERP 관리자 계정으로 다음 페이지에 로그인합니다.
+1. ERP 관리자로 다음 연결 확인 화면에 로그인합니다.
 https://bobjjangs1231.dothome.co.kr/tire/erp/dispatch_setup.php
-2. 기존 연동키가 있으면 그대로 사용합니다. 처음 설치할 때만 연동키 발급을
-누릅니다. 새 키는 이 화면에서 지금 한 번만 표시됩니다.
-3. Render → bareun-dispatch-test → Environment에 등록합니다.
+기존 연동키는 그대로 사용합니다. 처음 설치할 때만 연동키를 발급합니다.
+2. Render Environment의 기존 설정을 유지하거나 처음에만 등록합니다.
 COMPANY_ERP_API_URL=https://bobjjangs1231.dothome.co.kr/tire/erp/dispatch_api.php
-COMPANY_ERP_TOKEN=발급된 연동키
-실제 키를 채팅/앱/공개 저장소에 보내지 마세요.
-4. 같은 ERP 관리자 연결 설정에서 ‘앱 판매 작성 허용 · 저장소 준비’를 누릅니다.
-이전 버전에서 켰어도 다시 눌러 새 공장도가 스냅샷 열을 준비하세요.
-기존 키는 변경하지 않습니다. DB CREATE/ALTER 권한이 필요합니다.
-5. 필요한 기존 무료 Render 내역을 백업하고 codex/free-node-test 최신 커밋을 수동 배포합니다.
-6. ERP 관리자 dispatch_setup.php의 ‘ERP 전표 조회 테스트’에서
-20261106-49, 20261106-48을 확인합니다. 읽기 전용으로 키·전표·재고를 바꾸지 않습니다.
-7. 갱신된 웹/앱의 하단 ‘명세서’ → 전표번호로 명세서 조회에서 같은 번호를 확인합니다.
-ERP 연결 확인은 서버/연동 버전과 판매 건수를 표시합니다.
-휴대폰은 가로 넘김 없는 세로 품목 카드입니다. 고객명·차량번호 입력란은 제거했습니다.
-2354518, 235/45r18, 235/45 R18은 같은 정확한 타이어 규격을 찾습니다.
+COMPANY_ERP_TOKEN=ERP에서 발급한 연동키
+키는 채팅·앱·공개 저장소에 넣지 마세요.
+3. 연결 확인 화면에서 현재 조회 저장소가 erp_ecount_documents, 연동 버전이
+1.13.0인지 확인합니다. ‘이 저장소에 실제로 있는 최근 전표’를 선택하여 기존
+ERP 편집기와 대조합니다. 과거 예시 번호가 현재 DB에도 있다고 가정하지 않습니다.
+사용 중인 수정 주소가 native_trade_edit.php?id=129470이면 다음으로 대조합니다.
+https://bobjjangs1231.dothome.co.kr/tire/erp/dispatch_setup.php?documentId=129470
+129470은 문서 ID이며 전표의 마지막 순번과 다릅니다. 다른 건은 실제 id를 씁니다.
+4. 필요한 기존 무료 Render 내역을 보관한 뒤 codex/free-node-test에서 해당
+릴리스 커밋을 배포하고 1.13.0(23) 앱을 설치합니다. Render 인증·배포는 사용자가
+진행합니다. 앱 ‘명세서’에서도 동일한 실제 표시 전표번호를 대조합니다.
 
-배송지 직접 입력은 ERP 연결 시 새 판매전표 작성입니다. 거래처/품목 검색에서
-선택 후 품목의 품목코드·품목명·패턴·수량·단가·금액·합계·비고·DC율을 입력합니다.
-단가·금액은 거래처 소매/도매 구분과 수량으로 자동 입력합니다.
-금액=공급가액, 합계=부가세 포함. 공장도가·적요도 표시합니다.
-DC율 기준은 공장도가가 있으면 공장도가, 없으면 ERP 소매 기준가입니다.
-‘ERP 판매·배송지 함께 저장’으로 ERP 작성중 전표와 앱 배송지를 저장합니다.
-판매일자는 한국 오늘 날짜 고정, 번호는 저장 시 YYYYMMDD-순번으로 ERP에서 발급합니다.
-화면 번호는 예상값입니다. ERP 판매 확정/재고 차감/수금은 기존 ERP에서 처리합니다.
-기존 ERP 전표를 가져와 배송지로 저장하는 기능은 ERP 판매를 다시 만들지 않습니다.
+이번 연결은 실제 native_trade_edit.php와 같은 회사 DB의 원본 보관 자료를
+읽습니다. erp_ecount_* 테이블 이름은 외부 E카운트 API 연동을 뜻하지 않습니다.
+현재 current_version_id의 원본 행과 해당 버전에 저장된 마지막 수정본을 읽고,
+설치된 ERP 도우미의 회사·거래처·명세서·품목·공장도가·DOT 기본값을 적용합니다.
+표시 전표번호와 내부 source_doc 자료 번호가 달라도 구분합니다. 원본 보관 건은
+‘ERP 보관 전표’이며 작성중·확정 상태를 추측하지 않습니다. 없는 금액은 미확인으로
+유지하고 부가세를 일괄 10%로 만들지 않습니다. 원본 항목과 소수 값도 보존합니다.
 
-연결 오류가 나면 같은 전표에서 다시 저장하거나 ‘마무리할 ERP 판매 저장’에서
-이어서 처리하세요. ERP 요청 번호로 중복 생성을 방지합니다. 앱 배송지를 삭제해도
-ERP 전표는 삭제되지 않습니다. 서버 APP_DATA_DIR은 반드시 영속 저장소로 운영하세요.
-무료 Render의 임시 파일/DB가 지워지면 저장 중 복구 기록도 사라질 수 있습니다.
+기존 business_source_service.php, native_line_view.php, native_sale_partner.php,
+statement_print.php, statement_source_service.php, company_service.php 및 이들의
+종속 도우미는 원래 ERP의 호환 버전을 그대로 사용합니다. 누락·버전 불일치·원본
+DB 오류는 해당 오류로 중단합니다. 빈 일반 판매 DB로 몰래 전환하지 않습니다.
+원본 읽기에는 DB 설치/마이그레이션이나 ‘앱 판매 작성 허용 · 저장소 준비’가
+필요하지 않습니다. 키·원본 판매·확정·재고를 변경하지 않는 읽기 전용 조회입니다.
 
-1.12 앱의 날짜별 조회는 ERP 판매일자와 전표번호 날짜를 함께 확인합니다.
-실제 날짜가 다르면 원본 판매일자를 보존해 따로 표시합니다.
-판매조회는 작성중·확정·취소·반품 전표를 목록으로 보여 줍니다.
-전표번호로 거래명세서를 열고 배송할 전표만 선택해 배차 대기에 넣습니다.
-취소·반품/0 이하 수량 전표는 배차하지 못합니다. 이전 1.9 앱은 기존 확정 전표 조회를 유지합니다. ERP 주소/연락처가 비어 있으면 검토 중 입력합니다.
-조회 결과를 검토하여 저장하기 전에는 배송지를 만들지 않습니다. 앱을 닫은 동안
-자동 등록하지 않습니다. 거래처·품목은 전표 화면을 열면 자동 갱신됩니다.
-일자 조회 한 번으로 전체 판매목록을 읽고 전표번호를 누르면 최신 ERP 전체 내용을 채웁니다.
-확인하고 전표 등록 한 번으로 앱 배송 전표를 등록하며 ERP 판매·재고는 변경하지 않습니다.
-E카운트 직접 연동은 제거했습니다.
+전표 화면은 거래처·품목을 자동 갱신하며 검색할 때 ERP를 조회합니다. 일자 조회
+한 번으로 해당 날짜의 전체 목록을 읽고 전표번호를 누르면 현재 전체 내용을
+다시 채웁니다. ERP 일자와 번호 날짜가 다르면 원본 일자를 보존해 따로 표시합니다.
+양수 수량·확인된 음수 아닌 합계 등 배송 조건을 확인하고 ‘확인하고 전표 등록’으로
+앱 배송 전표를 등록합니다. 원본이 바뀌면 재확인하고 중복 등록을 방지합니다.
+조회·기존 전표 등록은 ERP 판매/확정/재고를 변경하지 않습니다. 하루 2,000건 초과나
+페이지 사이 변경은 부분 성공으로 저장하지 않습니다. 지역별 배차 추천은 구·시·군을
+기준으로 묶으며 회사 출발·복귀와 배송지 체류 설정을 반영합니다.
 
-요구 사항: 기존 ERP의 inc/bootstrap.php, inc/functions.php, inc/config.php와
-공개 erp 저장소의 테이블 구조(erp_partners, erp_items, erp_trades, erp_trade_lines).
-PHP 8.0 이상. PHP 8.3/MariaDB 10.11 가상 자료로 검증했습니다.
-테스트는 실제 닷홈 설치 및 실제 회사 데이터 검증을 대신하지 않습니다.
+새 수기 판매전표는 별도 일반 ERP 저장소 erp_trades의 작성중 전표입니다.
+원본 보관 전표를 새로 작성하거나 수정하는 기능은 아닙니다. 이 별도 작성 기능을
+쓸 때만 ‘앱 판매 작성 허용 · 저장소 준비’를 사용합니다(DB CREATE/ALTER 필요).
+ERP 판매 확정·재고·수금은 기존 ERP에서 처리합니다. 일반 판매 저장소가 함께 있으면
+날짜별 조회에서 두 출처를 구분하며 같은 내부 ID를 서로 다른 전표로 취급합니다.
+앱 내역/배송지를 삭제해도 ERP 원본은 삭제되지 않습니다. APP_DATA_DIR은 반드시
+영속 저장소로 운영하세요. 무료 Render의 임시 DB가 지워지면 앱 내역도 사라집니다.
 
-연동키 저장 실패: inc 폴더를 PHP에서 쓸 수 있는지 호스팅 관리자에게 확인하세요.
-키를 다시 발급하면 Render에도 새 키를 등록하고 재시작해야 합니다.
-연동키 파일 inc/dispatch_bridge.private.php는 공개 저장소에 올리지 마세요.
+요구 사항: PHP 8.1 이상, 기존 ERP 설정과 호환되는 원래 조회 도우미·DB.
+검증은 PHP 8.3/MariaDB 10.11에서 제공받은 실제 편집기·도우미 함수와 가상 자료로
+수행했습니다. 제공되지 않은 부가 서비스는 테스트용으로만 대체했습니다. 실제
+운영 자료 조회·닷홈 설치·Render 배포·실제 휴대폰/GPS 검증을 대신하지 않습니다.
+원래 도우미가 바뀌면 호환성을 다시 확인하세요. 릴리스 커밋·공개 ZIP/APK SHA-256은
+해당 릴리스에서 확인하고, 원래 도우미 버전·해시는 관리자 환경에서 비교합니다.
+전체 설치·사용·오류 구분 안내: 저장소 docs/ERP_1_13_NATIVE.md
 '''
 out.parent.mkdir(parents=True,exist_ok=True)
 with zipfile.ZipFile(out,'x',compression=zipfile.ZIP_DEFLATED) as z:
@@ -77,8 +88,8 @@ with zipfile.ZipFile(out,'x',compression=zipfile.ZIP_DEFLATED) as z:
  z.writestr('설치안내.txt',readme)
 with zipfile.ZipFile(out) as z:
  assert z.testzip() is None
- assert len(z.namelist())==6
+ assert len(z.namelist())==len(files)+1
  assert not any('private.php' in x or x.endswith('/config.php') for x in z.namelist())
 digest=hashlib.sha256(out.read_bytes()).hexdigest()
 out.with_suffix(out.suffix+'.sha256').write_text(digest+'  '+out.name+'\n')
-print(f'Created {out} ({out.stat().st_size:,} bytes; 5 PHP files and installation guide)')
+print(f'Created {out} ({out.stat().st_size:,} bytes; 7 PHP files and installation guide)')

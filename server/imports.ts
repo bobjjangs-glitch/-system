@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { rm } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import type { ShipmentInput } from "./types.ts";
+import type { Item, ShipmentInput } from "./types.ts";
 
 const aliases: Record<string, string[]> = {
   recipient: [
@@ -650,20 +650,71 @@ export async function recognizeReceipt(
   receiptPool ??= new ReceiptOcrPool();
   return receiptPool.recognize(buffer, options);
 }
+const nativeShipmentText = (value: unknown, max: number, label: string): string => {
+  if (typeof value !== "string" || value.length > max)
+    throw new Error(`ERP ${label}을 확인해 주세요.`);
+  return value;
+};
+const nativeShipmentItem = (value: any): Item => {
+  const result: Item = {
+    name: nativeShipmentText(value.name, 4000, "품목명").trim(),
+    quantity: Number(value.quantity),
+    priceOrigin: "native-erp",
+  };
+  if (value.quantityUnknown === true || Math.abs(result.quantity) > 1e9)
+    throw new Error("ERP 품목 수량을 확인해 주세요.");
+  for (const field of ["code", "specification", "pattern", "brand", "dot", "discountRateRaw", "remarks", "erpItemId"] as const) {
+    if (value[field] !== undefined)
+      result[field] = nativeShipmentText(value[field], field === "remarks" ? 8000 : field === "erpItemId" ? 20 : 4000, "품목 정보");
+  }
+  for (const field of ["unitPrice", "supplyAmount", "totalAmount", "discountRate", "listPrice", "factoryPrice", "retailPrice", "wholesalePrice", "vatAmount", "vatRate"] as const) {
+    const amount = value[field];
+    if (amount === undefined) continue;
+    if (amount !== null && (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0 || amount > 1e14 ||
+      (field === "discountRate" && amount > 100) || (field === "vatRate" && amount !== 0 && amount !== 10)))
+      throw new Error("ERP 품목 금액을 확인해 주세요.");
+    result[field] = amount;
+  }
+  if (value.taxType !== undefined) {
+    if (value.taxType !== "taxable" && value.taxType !== "exempt")
+      throw new Error("ERP 품목 세금 유형을 확인해 주세요.");
+    result.taxType = value.taxType;
+  }
+  if (value.amountBasis !== undefined) {
+    if (!["unit", "supply", "total"].includes(value.amountBasis))
+      throw new Error("ERP 품목 금액 기준을 확인해 주세요.");
+    result.amountBasis = value.amountBasis;
+  }
+  if (value.nativeFields !== undefined) {
+    if (!value.nativeFields || typeof value.nativeFields !== "object" || Array.isArray(value.nativeFields))
+      throw new Error("ERP 품목 추가 정보를 확인해 주세요.");
+    const fields = Object.entries(value.nativeFields);
+    if (fields.length > 200 || fields.some(([key, text]) => !key.trim() || key.length > 200 ||
+      ["__proto__", "prototype", "constructor"].includes(key) || typeof text !== "string" || text.length > 8000))
+      throw new Error("ERP 품목 추가 정보를 확인해 주세요.");
+    result.nativeFields = Object.fromEntries(fields) as Record<string, string>;
+  }
+  return result;
+};
 export function validateShipments(rows: unknown): ShipmentInput[] {
   if (!Array.isArray(rows) || !rows.length || rows.length > 2000)
     throw new Error("배송지는 1개 이상 2,000개 이하로 입력해 주세요.");
   return rows.map((row, i) => {
+    if (!row || typeof row !== "object" || Array.isArray(row))
+      throw new Error(`${i + 1}번 배송지를 확인해 주세요.`);
+    const native = row.erpSourceSystem === "native-archive";
+    if (row.erpSourceSystem != null && !["native-archive", "legacy"].includes(row.erpSourceSystem))
+      throw new Error("ERP 전표 출처를 확인해 주세요.");
     if (
       typeof row.recipient !== "string" ||
       !row.recipient.trim() ||
-      row.recipient.length > 200
+      row.recipient.length > (native ? 500 : 200)
     )
       throw new Error(`${i + 1}번 수령인을 확인해 주세요.`);
     if (
       typeof row.address !== "string" ||
       !row.address.trim() ||
-      row.address.length > 500
+      row.address.length > (native ? 8000 : 500)
     )
       throw new Error(`${i + 1}번 배송주소를 확인해 주세요.`);
     if (
@@ -671,6 +722,7 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
       !row.items.length ||
       row.items.some(
         (v: any) =>
+          !v || typeof v !== "object" || Array.isArray(v) ||
           typeof v.name !== "string" ||
           !v.name.trim() ||
           !Number.isFinite(Number(v.quantity)) ||
@@ -699,26 +751,28 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
     )
       throw new Error(`${i + 1}번 금액을 확인해 주세요.`);
     if (
-      row.erpSourceKey &&
-      !/^(ecount|company)-sale-[a-f0-9]{64}$/.test(row.erpSourceKey)
+      (native && (typeof row.erpSourceKey !== "string" || !/^company-sale-[a-f0-9]{64}$/.test(row.erpSourceKey))) ||
+      (row.erpSourceKey && !/^(ecount|company)-sale-[a-f0-9]{64}$/.test(row.erpSourceKey))
     )
       throw new Error("판매전표 번호를 확인해 주세요.");
     return {
       recipient: row.recipient.trim(),
       address: row.address.trim(),
-      phone: String(row.phone ?? "").slice(0, 40),
-      notes: String(row.notes ?? "").slice(0, 2000),
-      items: row.items.map((v: any) => ({
+      phone: native ? nativeShipmentText(row.phone ?? "", 500, "연락처") : String(row.phone ?? "").slice(0, 40),
+      notes: native ? nativeShipmentText(row.notes ?? "", 8000, "메모") : String(row.notes ?? "").slice(0, 2000),
+      items: row.items.map((v: any) => native ? nativeShipmentItem(v) : ({
         name: v.name.trim().slice(0, 200),
         quantity: Number(v.quantity),
         ...(v.code ? { code: String(v.code).slice(0, 100) } : {}),
         ...Object.fromEntries(
-          ["specification", "pattern", "erpItemId", "remarks"]
+          ["specification", "pattern", "erpItemId", "remarks", "brand", "dot", "discountRateRaw"]
             .filter((key) => typeof v[key] === "string")
             .map((key) => [key, v[key].slice(0, 200)]),
         ),
         ...Object.fromEntries(
           [
+            "vatAmount",
+            "vatRate",
             "unitPrice",
             "supplyAmount",
             "totalAmount",
@@ -737,7 +791,9 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
             )
             .map((key) => [key, v[key]]),
         ),
-        ...(["erp", "manual", "ocr"].includes(v.priceOrigin) ? { priceOrigin: v.priceOrigin } : {}),
+        ...(["erp", "manual", "ocr", "native-erp"].includes(v.priceOrigin) ? { priceOrigin: v.priceOrigin } : {}),
+        ...(v.priceOrigin === "native-erp" && v.nativeFields && typeof v.nativeFields === "object" && !Array.isArray(v.nativeFields)
+          ? { nativeFields: Object.fromEntries(Object.entries(v.nativeFields).filter(([key,value]) => !["__proto__","prototype","constructor"].includes(key) && key.length<=200 && typeof value === "string" && value.length<=4000).slice(0,150)) } : {}),
         ...(["taxable", "exempt"].includes(v.taxType)
           ? { taxType: v.taxType }
           : {}),
@@ -748,26 +804,27 @@ export function validateShipments(rows: unknown): ShipmentInput[] {
       lat,
       lng,
       ...(amount !== null ? { amount } : {}),
-      ...(row.customerCode
-        ? { customerCode: String(row.customerCode).slice(0, 100) }
+      ...(row.customerCode || (native && row.customerCode === "")
+        ? { customerCode: native ? nativeShipmentText(row.customerCode, 500, "거래처 코드") : String(row.customerCode).slice(0, 100) }
         : {}),
       ...(typeof row.invoiceCustomerName === "string"
-        ? { invoiceCustomerName: row.invoiceCustomerName.slice(0, 100) }
+        ? { invoiceCustomerName: native ? nativeShipmentText(row.invoiceCustomerName, 500, "거래처명") : row.invoiceCustomerName.slice(0, 100) }
         : {}),
       ...(typeof row.invoiceVehicleNo === "string"
-        ? { invoiceVehicleNo: row.invoiceVehicleNo.slice(0, 20) }
+        ? { invoiceVehicleNo: native ? nativeShipmentText(row.invoiceVehicleNo, 100, "차량번호") : row.invoiceVehicleNo.slice(0, 20) }
         : {}),
       ...(row.erpPriceChannel === "retail" ||
       row.erpPriceChannel === "wholesale"
         ? { erpPriceChannel: row.erpPriceChannel }
         : {}),
       ...(row.erpCustomerId
-        ? { erpCustomerId: String(row.erpCustomerId).slice(0, 20) }
+        ? { erpCustomerId: native ? nativeShipmentText(row.erpCustomerId, 20, "거래처 식별자") : String(row.erpCustomerId).slice(0, 20) }
         : {}),
       ...(row.salesReference
-        ? { salesReference: String(row.salesReference).slice(0, 200) }
+        ? { salesReference: native ? nativeShipmentText(row.salesReference, 200, "전표번호") : String(row.salesReference).slice(0, 200) }
         : {}),
       ...(row.erpSourceKey ? { erpSourceKey: row.erpSourceKey } : {}),
+      ...(row.erpSourceSystem ? { erpSourceSystem: row.erpSourceSystem } : {}),
     };
   });
 }

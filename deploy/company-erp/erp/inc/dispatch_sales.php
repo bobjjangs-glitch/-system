@@ -14,7 +14,17 @@ function bds_install(PDO $pdo): void {
 }
 function bds_today(): string { return (new DateTimeImmutable('now',new DateTimeZone('Asia/Seoul')))->format('Y-m-d'); }
 function bds_max(PDO $pdo,string $date): int {
-    $st=bd_prepare($pdo,"SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(trade_no,'-',-1) AS UNSIGNED)),0) FROM erp_trades WHERE trade_type='sale' AND (DATE(trade_date)=? OR trade_no REGEXP ?) AND trade_no REGEXP '-[0-9]+$'");$st->execute([$date,bd_reference_date_pattern($date)]);return (int)$st->fetchColumn();
+    $st=bd_prepare($pdo,"SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(trade_no,'-',-1) AS UNSIGNED)),0) FROM erp_trades WHERE trade_type='sale' AND (DATE(trade_date)=? OR trade_no REGEXP ?) AND trade_no REGEXP '-[0-9]+$'");$st->execute([$date,bd_reference_date_pattern($date)]);$max=(int)$st->fetchColumn();
+    if(bd_native_mode($pdo)){
+        foreach(bd_native_candidates($pdo,$date,null,null) as $doc){
+            $first=$doc['first_row_json']===null?[]:bd_native_raw((string)$doc['first_row_json'],'표시 전표번호');
+            foreach([bd_native_identity($doc,[$first]),(string)$doc['source_doc']] as $reference){
+                $parts=bd_native_reference_parts($reference);
+                if($parts!==null&&$parts['date']===$date)$max=max($max,(int)$parts['sequence']);
+            }
+        }
+    }
+    return $max;
 }
 function bds_context(PDO $pdo,array $config): array {
     $date=bds_today();$prefix=$config['sequence_prefix']??'SL';
@@ -66,7 +76,7 @@ function bds_create(PDO $pdo,array $config,array $input): array {
         $have=bds_columns($pdo,'erp_trades');foreach(['delivery_addr'=>$address,'delivery_phone'=>$phone,'delivery_recipient'=>$recipient] as $col=>$value)if(in_array($col,$have,true))$header[$col]=$value;
         bds_insert($pdo,'erp_trades',$header);$id=(string)$pdo->lastInsertId();$have=bds_columns($pdo,'erp_trade_lines');
         foreach($lines as $i=>$l){$row=['trade_id'=>(int)$id,'line_no'=>$i+1,'item_id'=>(int)$l['erpItemId'],'item_name'=>$l['name'],'spec'=>$l['specification'],'tax_type'=>$l['taxType'],'qty'=>number_format($l['quantity'],3,'.',''),'unit_price'=>$l['unitPrice'],'amount'=>$l['supplyAmount'],'memo'=>$l['remarks']];foreach(['item_code'=>$l['code'],'pattern_name'=>$l['pattern'],'list_price'=>$l['listPrice'],'dc_rate'=>(int)round(($l['discountRate']??0)*100),'dispatch_factory_price'=>$l['factoryPrice'],'dispatch_price_version'=>1,'dispatch_total'=>$l['totalAmount'],'dispatch_amount_basis'=>$l['amountBasis']] as $col=>$value)if(in_array($col,$have,true))$row[$col]=$value;bds_insert($pdo,'erp_trade_lines',$row);}
-        $code=$partner['partner_code']??$partner['ecount_code']??'';
+        $code=bd_native_mode($pdo)?(($partner['ecount_code']??'')?:($partner['partner_code']??'')):($partner['partner_code']??$partner['ecount_code']??'');
         $result=['schema'=>2,'ok'=>true,'instanceId'=>$config['instance_id'],'requestId'=>$key,'sale'=>['id'=>$id,'reference'=>$reference,'saleDate'=>$date,'status'=>'draft','recipient'=>$recipient,'address'=>$address,'phone'=>$phone,'customerCode'=>(string)$code,'erpCustomerId'=>$pid,'notes'=>$notes,'items'=>$lines,'amount'=>$total,'supplyAmount'=>$supply,'vatAmount'=>$total-$supply,'channel'=>$header['channel'],'paymentMethod'=>'','customerName'=>$header['customer_name'],'vehicleNo'=>$header['vehicle_no'],'cancelReason'=>'','supplier'=>bd_supplier(),'buyer'=>['name'=>(string)$partner['name'],'businessNumber'=>(string)($partner['business_no']??''),'representative'=>(string)($partner['ceo_name']??''),'address'=>(string)$partner['address'],'phone'=>(string)$partner['phone']]]];
         $json=json_encode($result,JSON_UNESCAPED_UNICODE|JSON_INVALID_UTF8_SUBSTITUTE|JSON_THROW_ON_ERROR);
         bd_prepare($pdo,'UPDATE erp_dispatch_requests SET trade_id=?,response_json=? WHERE request_key=?')->execute([$id,$json,$key]);

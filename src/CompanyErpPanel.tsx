@@ -43,8 +43,8 @@ export default function CompanyErpPanel({ date, disabled, onSalesList, onOpenInv
         setCatalogError("회사 ERP 연결 설정이 필요합니다. 아래 설치·연결 안내를 확인해 주세요.");
         return;
       }
-      if (!value.automaticCompanyCatalogs) {
-        setCatalogError("자동 조회를 사용하려면 Render 서버를 1.12.0 이상으로 배포해 주세요.");
+      if (!value.automaticCompanyCatalogs || !value.nativeArchiveInvoices) {
+        setCatalogError("자동 조회를 사용하려면 Render 서버를 1.13.0 이상으로 배포해 주세요.");
         return;
       }
       const rows = await api<Catalogs>("/api/company-erp/catalog/refresh", { method: "POST" });
@@ -124,7 +124,7 @@ export default function CompanyErpPanel({ date, disabled, onSalesList, onOpenInv
     {status && (!status.salesInvoiceBrowser || !status.invoiceReferenceLookup) &&
       <Text style={{ color: C.amber, marginBottom: 12 }}>전표 조회를 사용하려면 Render 서버를 최신 버전으로 배포해 주세요.</Text>}
     <Button title={salesBusy ? "해당 일자 전체 조회 중…" : "일자 조회"} onPress={() => void readSales()}
-      disabled={disabled || salesBusy || !validSalesDate(salesDate) || !status?.company?.configured || !status?.invoiceReferenceLookup || !status?.automaticCompanyCatalogs} />
+      disabled={disabled || salesBusy || !validSalesDate(salesDate) || !status?.company?.configured || !status?.invoiceReferenceLookup || !status?.automaticCompanyCatalogs || !status?.nativeArchiveInvoices} />
     {!!error && <Text accessibilityRole="alert" style={{ color: C.red, marginTop: 12 }}>{error}</Text>}
     <View style={{ marginTop: 10 }}><Button title="전표번호로 명세서 찾기" secondary onPress={onOpenInvoices} disabled={disabled || salesBusy} /></View>
     <View style={{ marginTop: 14 }}><Button title={help ? "설치 안내 접기" : "회사 ERP 설치·연결 안내"} secondary onPress={() => setHelp(!help)} /></View>

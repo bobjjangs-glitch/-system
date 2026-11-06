@@ -317,7 +317,7 @@ export class CompanySaleService {
           }),
         );
         this.store.run(
-          "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey,erpSourceSystem) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
           r.shipmentId,
           r.importId,
           row.recipient,
@@ -333,6 +333,7 @@ export class CompanySaleService {
           row.customerCode ?? null,
           sale.reference,
           row.erpSourceKey,
+          "legacy",
         );
         for (const key of salesImportKeys(row))
           this.store.run(

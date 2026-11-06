@@ -89,7 +89,7 @@ export default function CompanySalesBrowser({
     const doc = list?.documents.find(d => d.sourceKey === detailKey), controller = new AbortController();
     setDetail(null); setDetailError("");
     if (doc && list?.historical) { setDetail(doc); return () => controller.abort(); }
-    if (doc) api<{document: SalesDocument}>("/api/company-erp/invoices?reference="+encodeURIComponent(doc.reference), {signal: controller.signal})
+    if (doc) api<{document: SalesDocument}>("/api/company-erp/invoices?reference="+encodeURIComponent(doc.reference)+"&sourceSystem="+encodeURIComponent(doc.sourceSystem??"legacy"), {signal: controller.signal})
       .then(value => { if (!controller.signal.aborted) setDetail({...value.document, registered:doc.registered, eligible:value.document.eligible && !doc.registered}); })
       .catch(e => { if (!controller.signal.aborted) setDetailError(e.message); });
     return () => controller.abort();
@@ -139,7 +139,7 @@ export default function CompanySalesBrowser({
     guard.current = true;setBusy(true);setDetailError("");
     try {
       const result = await api<{count:number;alreadyRegistered:number}>("/api/company-erp/sales/confirm-reference", {
-        method:"POST",body:JSON.stringify({reference:detail.reference,fingerprint:detail.fingerprint,serviceDate,delivery:overrides[detail.sourceKey]}) });
+        method:"POST",body:JSON.stringify({reference:detail.reference,sourceSystem:detail.sourceSystem??"legacy",fingerprint:detail.fingerprint,serviceDate,delivery:overrides[detail.sourceKey]}) });
       if (!active.current) return;
       setDetailKey(null);setMessage(`${result.count}건을 전표로 등록했습니다.${result.alreadyRegistered ? " 이미 등록한 전표는 중복 등록하지 않았습니다." : ""}`);
       onSaved(serviceDate);setList(await api<SalesList>("/api/company-erp/sales/lists/"+list.id));

@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+ini_set('display_errors','0');
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, private');
 header('X-Content-Type-Options: nosniff');
@@ -23,6 +24,7 @@ try {
     $result = bd_read($pdo, $kind, $_GET, $config['instance_id']);
     $pdo->commit();
     echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR);
+} catch (DispatchNativeReadError $e) { if(isset($pdo)&&$pdo->inTransaction())$pdo->rollBack();http_response_code(502);echo json_encode(['ok'=>false,'code'=>$e->nativeCode,'error'=>$e->getMessage()],JSON_UNESCAPED_UNICODE);
 } catch (DomainException $e) { if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack(); bd_fail(409, $e->getMessage());
 } catch (InvalidArgumentException $e) { if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack(); bd_fail(400, $e->getMessage());
 } catch (LengthException $e) { if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack(); bd_fail(422, $e->getMessage());

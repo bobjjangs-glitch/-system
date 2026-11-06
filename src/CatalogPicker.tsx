@@ -68,9 +68,14 @@ function CatalogRow({
                 단가 {row.unitPrice.toLocaleString()}원
               </Text>
             )}
-          <Text style={s.muted}>
-            선택하면 수량에 맞춰 단가·금액·합계를 자동 입력합니다.
-          </Text>
+          {row.priceBasis === "catalog-reference" && <>
+            {row.referenceRetailPrice != null && <Text style={s.muted}>ERP 참고 소매가 {row.referenceRetailPrice.toLocaleString()}원</Text>}
+            {row.referenceWholesalePrice != null && <Text style={s.muted}>ERP 참고 도매가 {row.referenceWholesalePrice.toLocaleString()}원</Text>}
+            {row.referenceGrossPrice != null && <Text style={s.muted}>ERP 참고 VAT 포함 단가 {row.referenceGrossPrice.toLocaleString()}원</Text>}
+          </>}
+          <Text style={s.muted}>{row.priceBasis === "catalog-reference"
+            ? "ERP와 같이 품목 정보를 채우고 입력된 전표 가격은 유지합니다. 참고가격의 과세 기준은 원본을 확인해 주세요."
+            : "선택하면 수량에 맞춰 단가·금액·합계를 자동 입력합니다."}</Text>
         </>
       )}
     </Pressable>

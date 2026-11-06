@@ -4,6 +4,12 @@ export type CatalogEntry = {
   name: string;
   source: string;
   defaultChannel?: "retail" | "wholesale";
+  priceBasis?: "catalog-reference";
+  referenceRetailPrice?: number | null;
+  referenceWholesalePrice?: number | null;
+  referenceGrossPrice?: number | null;
+  referenceGrossSource?: string;
+  nativeHeader?: Record<string,string>;
   retailPrice?: number | null;
   wholesalePrice?: number | null;
   factoryPrice?: number | null;

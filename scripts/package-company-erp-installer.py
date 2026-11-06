@@ -5,7 +5,7 @@ root=Path(__file__).resolve().parents[1];out=Path(sys.argv[1]) if len(sys.argv)>
 rev=subprocess.check_output(['git','rev-parse','--short','HEAD'],cwd=root,text=True).strip();version=json.loads((root/'app.json').read_text())['expo']['version']
 assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',version) and re.fullmatch(r'[a-f0-9]+',rev)
 installer_name='bareun_update_'+version.rsplit('.',1)[0].replace('.','_')+'.php'
-files=['dispatch_api.php','dispatch_setup.php','dispatch_sale.php','inc/dispatch_bridge.php','inc/dispatch_sales.php']
+files=['dispatch_api.php','dispatch_setup.php','dispatch_sale.php','inc/dispatch_bridge.php','inc/dispatch_sales.php','inc/dispatch_native.php','inc/dispatch_catalog_native.php']
 import base64
 entries=[]
 for name in files:
@@ -66,16 +66,16 @@ if(is_post()){
         $result=bu_apply($root);
         // A one-time installer removes itself after a successful, verified update.
         @unlink(__FILE__);
-        header('Location: dispatch_setup.php?lookup=20261106-49',true,303);exit;
+        header('Location: dispatch_setup.php?installed=1',true,303);exit;
     }catch(Throwable $e){$error=$e->getMessage();}
 }
 ?>
 <!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>바른배차 ERP 자동 적용</title>
 <style>body{font:16px/1.6 system-ui;margin:0;padding:18px;background:#f1f5f3;color:#183e37}main{max-width:650px;margin:10px auto;background:white;padding:22px;border-radius:18px}button{width:100%;padding:16px;border:0;border-radius:12px;background:#24594b;color:white;font:inherit;font-weight:700}li{overflow-wrap:anywhere}p{overflow-wrap:anywhere}</style>
-<main><h1>바른배차 ERP 1.11.0 자동 적용</h1><p>검증한 PHP 5개를 백업한 뒤 교체합니다. 출처 커밋: <code>2afd904</code></p><ul><?php foreach(array_keys(bu_payload()) as $name): ?><li><?= h($name) ?></li><?php endforeach; ?></ul>
-<p>ERP DB·연동키·판매전표·재고는 유지됩니다. 기존 파일 백업은 inc 폴더의 PHP 실행 차단 형식으로 보관하며, 적용 실패 시 교체한 파일을 자동 복구합니다. 성공하면 이 설치 파일은 스스로 삭제되고 전표 20261106-49 확인 화면으로 이동합니다.</p>
+<main><h1>바른배차 ERP 1.11.0 자동 적용</h1><p>검증한 PHP 7개를 백업한 뒤 교체합니다. 출처 커밋: <code>2afd904</code></p><ul><?php foreach(array_keys(bu_payload()) as $name): ?><li><?= h($name) ?></li><?php endforeach; ?></ul>
+<p>ERP DB·연동키·판매전표·재고는 유지됩니다. 기존 파일 백업은 inc 폴더의 PHP 실행 차단 형식으로 보관하며, 적용 실패 시 교체한 파일을 자동 복구합니다. 성공하면 이 설치 파일은 스스로 삭제되고 실제 최근 전표 목록과 조회 저장소를 보여주는 확인 화면으로 이동합니다.</p>
 <?php if($error): ?><p role="alert" style="color:#b3453d"><?= h($error) ?></p><?php endif; ?>
-<form method="post"><?= csrf_field() ?><input type="hidden" name="action" value="install"><button type="submit">백업하고 ERP 파일 5개 적용</button></form><p><a href="index.php">ERP로 돌아가기</a></p></main></html>
+<form method="post"><?= csrf_field() ?><input type="hidden" name="action" value="install"><button type="submit">백업하고 ERP 파일 7개 적용</button></form><p><a href="index.php">ERP로 돌아가기</a></p></main></html>
 '''.replace('__PAYLOAD__',payload).replace('1.11.0',version).replace('2afd904',rev)
 phpFile=out/installer_name;phpFile.write_text(php)
 package=out/f'bareun-erp-install-{version}-{rev}.zip'
@@ -85,13 +85,13 @@ guide='''바른배차 ERP 자동 적용 · 1.11.0
    원래 index.php와 inc 폴더가 있는 위치입니다.
 2. ERP 관리자 계정으로 로그인하고 다음 주소를 엽니다.
    https://bobjjangs1231.dothome.co.kr/tire/erp/bareun_update_1_11.php
-3. ‘백업하고 ERP 파일 5개 적용’을 누릅니다.
-   5개 파일을 자동 백업/교체하고 설치 파일은 성공 후 삭제됩니다.
+3. ‘백업하고 ERP 파일 7개 적용’을 누릅니다.
+   7개 파일을 자동 백업/교체하고 설치 파일은 성공 후 삭제됩니다.
    ERP DB·연동키·판매전표·재고를 수정하지 않습니다.
-4. 자동으로 열리는 전표 20261106-49 조회 결과를 ERP 원본과 대조합니다.
+4. 자동으로 열리는 최근 전표 중 실제 번호 또는 원본 ID를 선택해 ERP 원본과 대조합니다.
 
 인증: 기존 ERP 관리자 로그인과 CSRF 검증이 필요합니다. 일반 사무 계정은 불가합니다.
-파일 대상은 고정된 5개이며 DB 설정/연동키 파일은 대상에 없습니다.
+파일 대상은 고정된 7개이며 DB 설정/연동키 파일은 대상에 없습니다.
 외부 파일 다운로드나 비밀번호 입력 없이 설치 파일에 내장된 검증본만 적용합니다.
 부족한 폴더 쓰기 권한/잘못된 경로는 변경 전에 안내합니다.
 Render 배포는 사용자가 진행하기로 했습니다. codex/free-node-test 커밋 2afd904를 배포하세요.

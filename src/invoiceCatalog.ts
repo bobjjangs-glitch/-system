@@ -6,6 +6,16 @@ export function invoiceProduct(
   entry: CatalogEntry,
   channel: "retail" | "wholesale" = "wholesale",
 ): Item {
+  if (entry.priceBasis === "catalog-reference") return {
+    ...item,
+    name: entry.name + (entry.specification && !entry.name.includes(entry.specification) ? " " + entry.specification : ""),
+    code:entry.code,erpItemId:entry.remoteId,specification:entry.specification,pattern:entry.pattern,
+    factoryPrice:entry.factoryPrice ?? null,listPrice:entry.factoryPrice ?? entry.listPrice ?? null,
+    retailPrice:null,wholesalePrice:null,
+    priceOrigin:item.priceOrigin === "native-erp" ? "native-erp" : "manual",
+    ...(entry.taxType ? {taxType:entry.taxType} : {}),
+    // The ERP's native picker changes identity metadata only; raw catalog prices have no proven VAT basis.
+  };
   const value = channel === "retail" ? entry.retailPrice : entry.wholesalePrice;
   return calculateInvoiceLine({
     ...item,

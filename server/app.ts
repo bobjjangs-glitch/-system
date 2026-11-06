@@ -363,7 +363,7 @@ export function createDispatchApp(
       ? {
           ...route,
           stops: route.stops.map(
-            ({ amount, customerCode, salesReference, erpSourceKey, erpCustomerId, ...stop }) => ({
+            ({ amount, customerCode, salesReference, erpSourceKey, erpSourceSystem, erpCustomerId, ...stop }) => ({
               ...stop,
               items: stop.items.map(({ name, quantity, code, specification, pattern }) => ({
                 name,
@@ -763,6 +763,7 @@ export function createDispatchApp(
       invoiceReferenceLookup:true,
       salesInvoiceBrowser: true,
       automaticCompanyCatalogs: true,
+      nativeArchiveInvoices: true,
       administratorDelete: true,
       salesDateFilter: true,
       regionalDispatch: true,
@@ -799,15 +800,15 @@ export function createDispatchApp(
   );
   app.get("/api/company-erp/invoices", admin, async (req, res) => {
     assert(typeof req.query.reference === "string", "전표번호를 입력해 주세요.", 400);
-    res.json(await companyErp.invoice(req.query.reference));
+    res.json(await companyErp.invoice(req.query.reference, req.query.sourceSystem as "native-archive" | "legacy" | undefined));
   });
   app.post("/api/company-erp/sales/confirm-reference", admin, async (req, res) => {
     assert(typeof req.body.reference === "string" && typeof req.body.fingerprint === "string", "확인할 ERP 전표를 선택해 주세요.",400);
-    res.status(201).json(await salesLists.confirmReference(req.body.reference,req.body.fingerprint,dateValue(req.body.serviceDate),req.body.delivery));
+    res.status(201).json(await salesLists.confirmReference(req.body.reference,req.body.fingerprint,dateValue(req.body.serviceDate),req.body.delivery,req.body.sourceSystem));
   });
   app.post("/api/company-erp/sales/reference-list", admin, async (req, res) => {
     assert(typeof req.body.reference === "string", "전표번호를 입력해 주세요.", 400);
-    res.status(201).json(await salesLists.reference(req.body.reference, dateValue(req.body.serviceDate)));
+    res.status(201).json(await salesLists.reference(req.body.reference, dateValue(req.body.serviceDate),req.body.sourceSystem));
   });
   app.post("/api/company-erp/sales/lists", admin, async (req, res) =>
     res.status(201).json(await salesLists.fetch(
@@ -1122,7 +1123,7 @@ export function createDispatchApp(
     importId: string | null = null,
   ) =>
     store.run(
-      "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO shipments(id,importId,recipient,address,phone,items,notes,lat,lng,serviceDate,createdAt,amount,customerCode,salesReference,erpSourceKey,erpSourceSystem) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       id(),
       importId,
       s.recipient,
@@ -1138,6 +1139,7 @@ export function createDispatchApp(
       s.customerCode ?? null,
       s.salesReference ?? null,
       s.erpSourceKey ?? null,
+      s.erpSourceSystem ?? null,
     );
   app.post("/api/imports/:id/commit", admin, (req, res) => {
     const batch = store.one("SELECT * FROM imports WHERE id=?", req.params.id);

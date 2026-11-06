@@ -2,6 +2,7 @@ export type Point = { lat: number; lng: number };
 export type Item = {
   name: string;
   quantity: number;
+  quantityUnknown?: boolean;
   code?: string;
   specification?: string;
   pattern?: string;
@@ -14,8 +15,14 @@ export type Item = {
   factoryPrice?: number | null;
   retailPrice?: number | null;
   wholesalePrice?: number | null;
-  priceOrigin?: "erp" | "manual" | "ocr";
+  priceOrigin?: "erp" | "manual" | "ocr" | "native-erp";
   taxType?: "taxable" | "exempt";
+  vatAmount?: number | null;
+  vatRate?: number | null;
+  brand?: string;
+  dot?: string;
+  discountRateRaw?: string;
+  nativeFields?: Record<string, string>;
   amountBasis?: "unit" | "supply" | "total";
   remarks?: string;
 };
@@ -35,6 +42,7 @@ export type ShipmentInput = {
   erpPriceChannel?: "retail" | "wholesale";
   salesReference?: string;
   erpSourceKey?: string;
+  erpSourceSystem?: "native-archive" | "legacy";
 };
 export type Shipment = ShipmentInput & {
   id: string;
