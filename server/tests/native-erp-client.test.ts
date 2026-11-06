@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { Store } from "../database.ts";
 import { CompanyErpClient } from "../companyErp.ts";
 import { invoiceProduct, invoiceCustomer } from "../../src/invoiceCatalog.ts";
+import { calculateInvoiceLine } from "../../src/invoiceMath.ts";
 const date = "2026-11-06", instance = "b".repeat(32), token = "a".repeat(64);
 const native = {
   id: "129470", sourceSystem: "native-archive", reference: "26/11/06-49", sourceReference: "20261105-48",
@@ -67,4 +68,11 @@ test("네이티브 목록의 미확인 세금과 참고가격은 자동단가로
   assert.equal(selected.unitPrice, 1234); assert.equal(selected.retailPrice, null); assert.equal(selected.priceOrigin, "manual");
   const changed = invoiceCustomer({recipient: "가상", address: "대전", items: [selected]}, {id: "C1", code: "C1", name: "다른 거래처", source: "company-erp-live", defaultChannel: "retail"});
   assert.equal(changed.items![0].unitPrice, 1234); assert.equal(changed.items![0].totalAmount, 1357);
+});
+test("OCR 전표에서 native 품목의 이름·규격만 선택해도 인쇄 금액과 미확인 세율을 보존한다", () => {
+  const selected = invoiceProduct({name: "인식 품목", quantity: 2, unitPrice: 368000, supplyAmount: null, totalAmount: 736000, priceOrigin: "ocr"},
+    {id: "P1", code: "P1", name: "가상 타이어", source: "company-erp-live", priceBasis: "catalog-reference", taxType: "taxable"});
+  assert.equal(selected.priceOrigin, "ocr"); assert.equal(selected.taxType, undefined);
+  const displayed = calculateInvoiceLine(selected);
+  assert.equal(displayed.unitPrice, 368000); assert.equal(displayed.totalAmount, 736000); assert.equal(displayed.supplyAmount, null);
 });

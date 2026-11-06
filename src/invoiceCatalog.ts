@@ -12,8 +12,8 @@ export function invoiceProduct(
     code:entry.code,erpItemId:entry.remoteId,specification:entry.specification,pattern:entry.pattern,
     factoryPrice:entry.factoryPrice ?? null,listPrice:entry.factoryPrice ?? entry.listPrice ?? null,
     retailPrice:null,wholesalePrice:null,
-    priceOrigin:item.priceOrigin === "native-erp" ? "native-erp" : "manual",
-    ...(entry.taxType ? {taxType:entry.taxType} : {}),
+    priceOrigin:item.priceOrigin === "native-erp" || item.priceOrigin === "ocr" ? item.priceOrigin : "manual",
+    ...(item.priceOrigin !== "native-erp" && item.priceOrigin !== "ocr" && entry.taxType ? {taxType:entry.taxType} : {}),
     // The ERP's native picker changes identity metadata only; raw catalog prices have no proven VAT basis.
   };
   const value = channel === "retail" ? entry.retailPrice : entry.wholesalePrice;
