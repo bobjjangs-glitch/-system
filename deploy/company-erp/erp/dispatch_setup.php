@@ -30,11 +30,27 @@ if (is_post()) {
         $shown = $token;
     } catch (Throwable $e) { $error = !empty($enabling) ? '앱 판매 저장소를 준비하지 못했습니다. DB CREATE/ALTER 권한과 inc 폴더 쓰기 권한을 확인해 주세요.' : '연동키를 저장하지 못했습니다. inc 폴더의 PHP 쓰기 권한을 호스팅 관리자에서 확인해 주세요.'; }
 }
+$lookupReference = isset($_GET['lookup']) && is_string($_GET['lookup']) ? trim($_GET['lookup']) : '';
+$lookupResult = null; $lookupError = '';
+if ($lookupReference !== '') {
+    try {
+        $pdo=db();$pdo->exec('START TRANSACTION READ ONLY');
+        $currentConfig=is_file($path)?bd_load_config($path):[];
+        $lookupResult=bd_read($pdo,'sales',['scope'=>'invoice','reference'=>$lookupReference,'date'=>bds_today(),'cursor'=>'0','limit'=>'2'],$currentConfig['instance_id']??str_repeat('0',32));
+        if(($lookupResult['scope']??'')!=='invoice'||($lookupResult['invoiceVersion']??0)!==2)throw new LogicException('BRIDGE_VERSION');
+        $pdo->commit();
+    } catch (Throwable $e) { if(isset($pdo)&&$pdo->inTransaction())$pdo->rollBack();$lookupError=$e instanceof LogicException&&$e->getMessage()==='BRIDGE_VERSION'?'연동 파일 버전이 맞지 않습니다. dispatch_api.php와 inc 폴더를 포함한 PHP 5개를 함께 교체해 주세요.':'ERP 전표를 조회하지 못했습니다. 연동 파일과 기존 ERP 구조를 확인해 주세요.'; }
+}
 ?>
 <!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>배차 앱 연결</title>
 <style>body{font:16px/1.7 system-ui;background:#f2f6f4;color:#183e37;margin:0}main{max-width:660px;margin:28px auto;padding:24px;background:white;border-radius:20px}button{background:#24594b;color:white;border:0;border-radius:12px;padding:14px;font:inherit;width:100%}textarea{box-sizing:border-box;width:100%;padding:12px;font-size:16px}p{overflow-wrap:anywhere}a{color:#24594b}</style>
-<main><h1>바른배차 · 회사 ERP 연결</h1><p>거래처·품목과 날짜별 확정 판매전표를 배차 앱에서 조회합니다. 앱 판매 작성을 켜면 오늘 날짜의 작성중 판매전표를 ERP에 저장합니다. ERP 확정·재고 처리는 기존 ERP에서 진행합니다.</p>
+<main><h1>바른배차 · 회사 ERP 연결</h1><p>거래처·품목과 날짜별 판매전표·전표번호별 명세서를 배차 앱에서 조회합니다. 앱 판매 작성을 켜면 오늘 날짜의 작성중 판매전표를 ERP에 저장합니다. ERP 확정·재고 처리는 기존 ERP에서 진행합니다.</p>
 <?php if ($error): ?><p role="alert"><?= h($error) ?></p><?php endif; ?>
 <?php if ($shown): ?><p><strong>새 연결키가 발급되었습니다. 지금 한 번만 표시됩니다.</strong></p><textarea readonly rows="3" aria-label="새 연결키"><?= h($shown) ?></textarea><p>Render → Environment의 <code>COMPANY_ERP_TOKEN</code> 값으로 저장하세요. <code>COMPANY_ERP_API_URL</code>은 이 사이트의 <code>dispatch_api.php</code> HTTPS 주소입니다. 키를 채팅·앱·공개 저장소에 넣지 마세요.</p>
 <?php else: ?><p><?= is_file($path) ? '연동키가 설정되어 있습니다. 재발급하면 기존 키는 사용할 수 없으므로 Render에서도 갱신해야 합니다.' : '아래 버튼으로 연결키를 발급한 뒤 Render 서버에 등록하세요.' ?></p><?php endif; ?>
-<form method="post"><?= csrf_field() ?><input type="hidden" name="issue" value="yes"><button type="submit"><?= is_file($path) ? '연동키 다시 발급' : '연동키 발급' ?></button></form><?php if (is_file($path)): $activeConfig=bd_load_config($path); ?><h2>앱 판매 작성</h2><p><?= !empty($activeConfig['writer_user_id']) ? '앱 판매 작성이 설정되어 있습니다. 기존 연결키를 계속 사용합니다.' : '앱에서 판매전표와 배송지를 함께 저장하려면 아래 설정을 켜세요. 전표는 작성중 상태로 등록됩니다.' ?></p><form method="post"><?= csrf_field() ?><input type="hidden" name="sales" value="enable"><button type="submit">앱 판매 작성 허용 · 저장소 준비</button></form><?php endif; ?><p><a href="index.php">ERP로 돌아가기</a></p></main></html>
+<form method="post"><?= csrf_field() ?><input type="hidden" name="issue" value="yes"><button type="submit"><?= is_file($path) ? '연동키 다시 발급' : '연동키 발급' ?></button></form><?php if (is_file($path)): $activeConfig=bd_load_config($path); ?><h2>앱 판매 작성</h2><p><?= !empty($activeConfig['writer_user_id']) ? '앱 판매 작성이 설정되어 있습니다. 기존 연결키를 계속 사용합니다.' : '앱에서 판매전표와 배송지를 함께 저장하려면 아래 설정을 켜세요. 전표는 작성중 상태로 등록됩니다.' ?></p><form method="post"><?= csrf_field() ?><input type="hidden" name="sales" value="enable"><button type="submit">앱 판매 작성 허용 · 저장소 준비</button></form><?php endif; ?><h2>ERP 전표 조회 테스트</h2><p>로그인한 이 ERP와 같은 DB에서 전표번호를 직접 확인합니다. 재고·판매전표·연동키는 변경하지 않습니다.</p>
+<form method="get"><label>확인할 전표번호<input name="lookup" aria-label="확인할 전표번호" maxlength="60" value="<?= h($lookupReference) ?>" placeholder="20261106-49" style="box-sizing:border-box;width:100%;padding:12px;margin:10px 0;font-size:16px"></label><button type="submit">ERP 전표 조회 테스트</button></form>
+<?php if($lookupError): ?><p role="alert"><?= h($lookupError) ?></p><?php elseif($lookupResult): ?>
+<?php if($lookupResult['total']===1): $found=$lookupResult['items'][0]; ?><p><strong>전표 조회 확인 완료 · <?= h($found['reference']) ?></strong><br>ERP 판매일자 <?= h($found['saleDate']??'미등록') ?> · 품목 <?= count($found['items']) ?>개 · 합계 <?= number_format((int)$found['amount']) ?>원</p><p><a href="trade_view.php?id=<?= (int)$found['id'] ?>">기존 ERP 전표 화면에서 대조하기</a></p>
+<?php elseif($lookupResult['total']===0): ?><p role="alert">현재 ERP 연결 DB에서 해당 판매전표를 찾지 못했습니다. 전표번호와 ERP 데이터 연결을 확인해 주세요.</p><?php else: ?><p role="alert">날짜·순번이 같은 전표가 여러 건입니다. ERP 전표번호를 그대로 입력해 주세요.</p><?php endif; ?>
+<?php endif; ?><p><a href="index.php">ERP로 돌아가기</a></p></main></html>

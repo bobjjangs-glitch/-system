@@ -1,5 +1,6 @@
+import InvoiceLineCards from "./InvoiceLineCards";
 import React from "react";
-import { ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Sheet, C, s } from "./ui";
 import {
   invoiceMoney,
@@ -14,11 +15,15 @@ export function InvoicePartyCard({
   title: string;
   party: InvoiceParty;
 }) {
+  const narrow = useWindowDimensions().width < 720;
   return (
     <View
       style={{
         flex: 1,
-        minWidth: 240,
+        minWidth: narrow ? 0 : 240,
+        ...(narrow
+          ? { width: "100%" as const, flexBasis: "100%" as const }
+          : {}),
         padding: 14,
         borderWidth: 1,
         borderColor: C.line,
@@ -43,6 +48,7 @@ export function InvoicePartyCard({
   );
 }
 export function InvoiceContents({ doc }: { doc: SalesDocument }) {
+  const narrow = useWindowDimensions().width < 720;
   const widths = [46, 75, 120, 230, 130, 80, 110, 120, 120, 150, 120, 80];
   const headings = [
     "No.",
@@ -93,6 +99,17 @@ export function InvoiceContents({ doc }: { doc: SalesDocument }) {
         {doc.saleDate} · {invoiceStatus(doc.status)} · 판매({channel})
         {pay ? " · " + pay : ""}
       </Text>
+      {doc.saleDateInferred && (
+        <Text style={{ color: C.amber }}>
+          ERP 판매일자가 미등록되어 전표번호의 날짜를 표시합니다.
+        </Text>
+      )}
+      {doc.referenceDate && (
+        <Text style={{ color: C.amber }}>
+          전표번호 날짜 · {doc.referenceDate} / ERP 판매일자 · {doc.saleDate}{" "}
+          (ERP 원본 기준)
+        </Text>
+      )}
       {doc.status === "draft" && (
         <Text style={{ color: C.amber }}>
           작성중 전표입니다. ERP 판매 확정·재고 반영은 아직 진행되지 않았습니다.
@@ -135,96 +152,108 @@ export function InvoiceContents({ doc }: { doc: SalesDocument }) {
         )}
       </View>
       <Text style={s.muted}>
-        품목표는 좌우로 밀어 확인하세요. 금액은 공급가액이며 합계는 부가세
-        포함입니다.
+        {narrow
+          ? "품목별 모든 항목을 아래에서 확인하세요."
+          : "품목표는 좌우로 밀어 확인하세요."}{" "}
+        금액은 공급가액이며 합계는 부가세 포함입니다.
       </Text>
-      <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
-        <View style={{ borderWidth: 1, borderColor: C.line }}>
-          <View style={{ flexDirection: "row", backgroundColor: "#f1f4f6" }}>
-            {headings.map((h, i) => (
-              <View
-                key={h}
-                style={{
-                  width: widths[i],
-                  padding: 10,
-                  borderRightWidth: 1,
-                  borderColor: C.line,
-                }}
-              >
-                <Text style={{ fontWeight: "700", fontSize: 12, color: C.ink }}>
-                  {h}
-                </Text>
-              </View>
-            ))}
-          </View>
-          {doc.items.map((item, i) => {
-            const gross =
-              item.totalAmount ??
-              (item.supplyAmount == null
-                ? null
-                : item.supplyAmount +
-                  (item.taxType === "exempt"
-                    ? 0
-                    : Math.round(item.supplyAmount / 10)));
-            const cells = [
-              String(i + 1),
-              doc.saleDate.slice(5).replace("-", "/"),
-              item.code || "—",
-              item.name +
-                (item.specification && !item.name.includes(item.specification)
-                  ? " " + item.specification
-                  : ""),
-              item.pattern || "—",
-              item.quantity.toLocaleString("ko-KR", {
-                maximumFractionDigits: 3,
-              }),
-              invoiceMoney(item.unitPrice),
-              invoiceMoney(item.supplyAmount),
-              invoiceMoney(gross),
-              item.remarks || "—",
-              invoiceMoney(item.factoryPrice),
-              item.discountRate == null ? "미등록" : item.discountRate + "%",
-            ];
-            return (
-              <View
-                key={i}
-                style={{
-                  flexDirection: "row",
-                  borderTopWidth: 1,
-                  borderColor: C.line,
-                }}
-              >
-                {cells.map((cell, j) => (
-                  <View
-                    key={j}
-                    style={{
-                      width: widths[j],
-                      padding: 10,
-                      borderRightWidth: 1,
-                      borderColor: C.line,
-                      justifyContent: "center",
-                    }}
+      {narrow ? (
+        <InvoiceLineCards items={doc.items} />
+      ) : (
+        <ScrollView
+          horizontal
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator
+        >
+          <View style={{ borderWidth: 1, borderColor: C.line }}>
+            <View style={{ flexDirection: "row", backgroundColor: "#f1f4f6" }}>
+              {headings.map((h, i) => (
+                <View
+                  key={h}
+                  style={{
+                    width: widths[i],
+                    padding: 10,
+                    borderRightWidth: 1,
+                    borderColor: C.line,
+                  }}
+                >
+                  <Text
+                    style={{ fontWeight: "700", fontSize: 12, color: C.ink }}
                   >
-                    <Text
-                      selectable
-                      accessibilityLabel={`${headings[j]} ${i + 1}`}
+                    {h}
+                  </Text>
+                </View>
+              ))}
+            </View>
+            {doc.items.map((item, i) => {
+              const gross =
+                item.totalAmount ??
+                (item.supplyAmount == null
+                  ? null
+                  : item.supplyAmount +
+                    (item.taxType === "exempt"
+                      ? 0
+                      : Math.round(item.supplyAmount / 10)));
+              const cells = [
+                String(i + 1),
+                doc.saleDate.slice(5).replace("-", "/"),
+                item.code || "—",
+                item.name +
+                  (item.specification && !item.name.includes(item.specification)
+                    ? " " + item.specification
+                    : ""),
+                item.pattern || "—",
+                item.quantity.toLocaleString("ko-KR", {
+                  maximumFractionDigits: 3,
+                }),
+                invoiceMoney(item.unitPrice),
+                invoiceMoney(item.supplyAmount),
+                invoiceMoney(gross),
+                item.remarks || "—",
+                invoiceMoney(item.factoryPrice),
+                item.discountRate == null ? "미등록" : item.discountRate + "%",
+              ];
+              return (
+                <View
+                  key={i}
+                  style={{
+                    flexDirection: "row",
+                    borderTopWidth: 1,
+                    borderColor: C.line,
+                  }}
+                >
+                  {cells.map((cell, j) => (
+                    <View
+                      key={j}
                       style={{
-                        fontSize: 13,
-                        color: C.ink,
-                        textAlign: [5, 6, 7, 8, 10, 11].includes(j)
-                          ? "right"
-                          : "left",
+                        width: widths[j],
+                        padding: 10,
+                        borderRightWidth: 1,
+                        borderColor: C.line,
+                        justifyContent: "center",
                       }}
                     >
-                      {cell}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            );
-          })}
-        </View>
-      </ScrollView>
+                      <Text
+                        selectable
+                        accessibilityLabel={`${headings[j]} ${i + 1}`}
+                        style={{
+                          fontSize: 13,
+                          color: C.ink,
+                          textAlign: [5, 6, 7, 8, 10, 11].includes(j)
+                            ? "right"
+                            : "left",
+                        }}
+                      >
+                        {cell}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              );
+            })}
+          </View>
+        </ScrollView>
+      )}
       {computed && (
         <Text style={s.muted}>
           행 합계는 저장된 공급가액과 과세 구분으로 계산한 참고값입니다. 아래

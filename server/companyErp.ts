@@ -1,10 +1,15 @@
+import { tireSizeQuery, productMatchesTireSize } from "../src/tireSearch.ts";
 import { normalizeSalesDocument } from "./salesDocuments.ts";
 import { documentShipment } from "../src/salesDocuments.ts";
 import { createHash } from "node:crypto";
 import type { Store } from "./database.ts";
 import type { ShipmentInput } from "./types.ts";
 import { salesImportKeys, savedManualSale } from "./erpCatalog.ts";
-import { validSalesDate, parseSalesReference } from "../src/salesReference.ts";
+import {
+  validSalesDate,
+  parseSalesReference,
+  readSalesDate,
+} from "../src/salesReference.ts";
 export const DEFAULT_COMPANY_ERP_URL =
   "https://bobjjangs1231.dothome.co.kr/tire/erp/dispatch_api.php";
 export class CompanyErpError extends Error {
@@ -45,6 +50,7 @@ export type CompanyCatalogEntry = {
 type Kind = CompanyCatalogKind | "sales";
 type Page = {
   scope?: string;
+  dateMode?: string;
   invoiceVersion?: number;
   instanceId: string;
   snapshot: string;
@@ -86,8 +92,14 @@ export class CompanyErpClient {
   private controllers = new Set<AbortController>();
   private jobs = new Set<Promise<unknown>>();
   private flights = new Map<string, Promise<any>>();
-  private reads: Partial<Record<Kind, { at: string; count: number }>> = {};
+  private reads: Partial<
+    Record<Kind, { at: string; count: number; date?: string }>
+  > = {};
   private lastError: string | null = null;
+  private failures: Partial<
+    Record<Kind, { at: string; code: string; message: string }>
+  > = {};
+  private activityKey = "";
   constructor(store: Store, deps: CompanyErpDeps = {}) {
     this.store = store;
     this.fetcher = deps.fetcher ?? fetch;
@@ -107,6 +119,58 @@ export class CompanyErpClient {
       this.valid = this.urlValid && /^[a-f0-9]{64}$/.test(this.token);
       this.url = u.toString();
     } catch {}
+    this.activityKey = "company-erp-activity:" + hash(this.url);
+    try {
+      const data = JSON.parse(
+        this.store.one(
+          "SELECT value FROM settings WHERE key=?",
+          this.activityKey,
+        )?.value ?? "{}",
+      );
+      for (const kind of ["customers", "products", "sales"] as const) {
+        const r = data.reads?.[kind];
+        if (
+          r &&
+          typeof r.at === "string" &&
+          Number.isFinite(Date.parse(r.at)) &&
+          Number.isSafeInteger(r.count) &&
+          r.count >= 0
+        )
+          this.reads[kind] = r;
+        const f = data.failures?.[kind];
+        if (
+          f &&
+          typeof f.at === "string" &&
+          typeof f.code === "string" &&
+          typeof f.message === "string"
+        )
+          this.failures[kind] = f;
+      }
+      const recent = Object.values(this.failures).sort((a, b) =>
+        b!.at.localeCompare(a!.at),
+      )[0];
+      const readAt =
+        Object.values(this.reads)
+          .map((r) => r!.at)
+          .sort()
+          .at(-1) ?? "";
+      if (recent && recent.at > readAt) this.lastError = recent.message;
+    } catch {}
+  }
+  private persistActivity() {
+    try {
+      this.store.run(
+        "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        this.activityKey,
+        JSON.stringify({ reads: this.reads, failures: this.failures }),
+      );
+    } catch {}
+  }
+  private recordRead(kind: Kind, at: string, count: number, date?: string) {
+    this.reads[kind] = { at, count, ...(date ? { date } : {}) };
+    delete this.failures[kind];
+    this.lastError = null;
+    this.persistActivity();
   }
   status() {
     return {
@@ -126,6 +190,7 @@ export class CompanyErpClient {
             : "not-tested",
       lastError: this.lastError,
       reads: this.reads,
+      failures: this.failures,
       confirmedSalesOnly: true,
     };
   }
@@ -165,6 +230,22 @@ export class CompanyErpClient {
               502,
             );
       this.lastError = error.message;
+      const kind: Kind | null =
+        key.includes("sales") || key.startsWith("invoice-")
+          ? "sales"
+          : key.includes("products")
+            ? "products"
+            : key.includes("customers")
+              ? "customers"
+              : null;
+      if (kind) {
+        this.failures[kind] = {
+          at: new Date(this.now()).toISOString(),
+          code: error.code,
+          message: error.message,
+        };
+        this.persistActivity();
+      }
       throw error;
     } finally {
       this.jobs.delete(task);
@@ -214,6 +295,15 @@ export class CompanyErpClient {
       }
       if (!response.ok) {
         await response.body?.cancel().catch(() => {});
+        if (
+          [401, 403].includes(response.status) &&
+          /text\/html/i.test(response.headers.get("content-type") ?? "")
+        )
+          throw new CompanyErpError(
+            "HOST_ACCESS_DENIED",
+            `닷홈 서버가 ERP 연동 요청을 차단했습니다(HTTP ${response.status}). 전표가 없는 상태가 아닙니다. 닷홈 접근 제한과 연동 파일의 외부 호출 허용을 확인해 주세요.`,
+            422,
+          );
         if ([401, 403].includes(response.status))
           throw new CompanyErpError(
             "AUTHORIZATION",
@@ -397,7 +487,9 @@ export class CompanyErpClient {
       );
       if (
         scope === "all" &&
-        (result.scope !== "all" || result.invoiceVersion !== 1)
+        (result.scope !== "all" ||
+          result.invoiceVersion !== 1 ||
+          result.dateMode !== "reference-or-date")
       )
         throw new CompanyErpError(
           "INVOICE_VERSION",
@@ -507,24 +599,28 @@ export class CompanyErpClient {
     return n;
   }
   async search(kind: CompanyCatalogKind, q: string) {
-    return this.track("search", async () => {
+    return this.track("search-" + kind, async () => {
       if (q.length > 100)
         throw new CompanyErpError("QUERY", "검색어를 줄여 주세요.", 400);
+      const tire = kind === "products" ? tireSizeQuery(q) : null;
       const result = await this.page(
           kind,
-          { q: q.trim(), cursor: "0", limit: "30" },
+          { q: tire?.canonical ?? q.trim(), cursor: "0", limit: "30" },
           this.now() + 20000,
         ),
         at = new Date(this.now()).toISOString();
-      const items = result.items.map((row) =>
-        this.catalog(kind, row, result.instanceId, at),
-      );
+      const items = result.items
+        .map((row) => this.catalog(kind, row, result.instanceId, at))
+        .filter(
+          (row) =>
+            !tire ||
+            productMatchesTireSize(row.name, row.specification ?? "", tire),
+        );
       const liveItems = items.map((item) => ({
         ...item,
         source: "company-erp-live" as const,
       }));
-      this.reads[kind] = { at, count: items.length };
-      this.lastError = null;
+      this.recordRead(kind, at, items.length);
       return liveItems;
     });
   }
@@ -565,8 +661,7 @@ export class CompanyErpClient {
               );
           }
         });
-        this.reads[kind] = { at: result.readAt, count: items.length };
-        this.lastError = null;
+        this.recordRead(kind, result.readAt, items.length);
         return { count: items.length, updatedAt: result.readAt, cached: false };
       },
       true,
@@ -719,8 +814,7 @@ export class CompanyErpClient {
           warnings.add(
             `이미 가져온 판매전표 ${duplicate}건은 제외했습니다. 등록된 배송지는 ERP 변경으로 자동 수정하지 않습니다.`,
           );
-        this.reads.sales = { at: result.readAt, count: result.items.length };
-        this.lastError = null;
+        this.recordRead("sales", result.readAt, result.items.length, date);
         return {
           drafts,
           recognitionWarnings: [...warnings],
@@ -769,9 +863,112 @@ export class CompanyErpClient {
               : doc.reason,
           };
         });
-        this.reads.sales = { at: result.readAt, count: documents.length };
-        this.lastError = null;
+        this.recordRead("sales", result.readAt, documents.length, date);
         return { documents, salesDate: date, sourceReadAt: result.readAt };
+      },
+      true,
+    );
+  }
+  async invoice(reference: string) {
+    const input = reference.normalize("NFKC").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9./_-]{0,59}$/.test(input))
+      throw new CompanyErpError(
+        "REFERENCE",
+        "전표번호를 그대로 입력해 주세요. 예: 20261106-49",
+        400,
+      );
+    return this.track(
+      "invoice-" + input,
+      async () => {
+        const parsed = parseSalesReference(input),
+          date =
+            parsed?.date ??
+            new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(
+              new Date(this.now()),
+            );
+        const result = await this.page(
+          "sales",
+          { scope: "invoice", reference: input, date, cursor: "0", limit: "2" },
+          this.now() + 20000,
+        );
+        if (result.scope !== "invoice" || result.invoiceVersion !== 2)
+          throw new CompanyErpError(
+            "INVOICE_VERSION",
+            "전표번호 직접 조회에는 최신 ERP 연동 파일이 필요합니다. PHP 5개를 같은 ZIP으로 교체해 주세요.",
+            502,
+          );
+        if (result.total === 0) {
+          this.recordRead("sales", result.readAt, 0, date);
+          throw new CompanyErpError(
+            "INVOICE_NOT_FOUND",
+            `ERP에서 전표번호 ${input}을 찾지 못했습니다. 날짜별 조회와 별도로 번호를 직접 조회한 결과입니다.`,
+            404,
+          );
+        }
+        if (
+          result.total !== 1 ||
+          result.items.length !== 1 ||
+          result.nextCursor !== null
+        )
+          throw new CompanyErpError(
+            "INVOICE_AMBIGUOUS",
+            "같은 날짜·순번의 전표가 여러 건입니다. ERP 화면의 전표번호를 그대로 입력해 주세요.",
+            409,
+          );
+        const row = result.items[0],
+          actualDate =
+            readSalesDate(String(row.saleDate ?? "").slice(0, 10)) ??
+            parseSalesReference(row.reference)?.date ??
+            date,
+          ref = parseSalesReference(row.reference);
+        if (
+          String(row.reference).toUpperCase() !== input.toUpperCase() &&
+          (!parsed || ref?.canonical !== parsed.canonical)
+        )
+          throw new CompanyErpError(
+            "INVOICE_MISMATCH",
+            "ERP가 요청한 번호와 다른 전표를 반환했습니다.",
+            502,
+          );
+        const document = normalizeSalesDocument(
+          row,
+          this.url,
+          result.instanceId,
+          actualDate,
+        );
+        this.recordRead("sales", result.readAt, 1, date);
+        return { document, sourceReadAt: result.readAt };
+      },
+      true,
+    );
+  }
+  async connection(date: string) {
+    if (!validSalesDate(date))
+      throw new CompanyErpError("DATE", "조회일자를 확인해 주세요.", 400);
+    return this.track(
+      "connection-sales",
+      async () => {
+        const r = await this.page(
+          "sales",
+          { scope: "capabilities", date, cursor: "0", limit: "1" },
+          this.now() + 20000,
+        );
+        if (r.scope !== "capabilities" || r.invoiceVersion !== 2)
+          throw new CompanyErpError(
+            "INVOICE_VERSION",
+            "ERP 연동 파일이 이전 버전입니다. 최신 PHP 파일 5개를 함께 교체해 주세요.",
+            502,
+          );
+        this.lastError = null;
+        delete this.failures.sales;
+        this.persistActivity();
+        return {
+          connected: true,
+          bridgeVersion: (r as any).bridgeVersion,
+          date,
+          matchedSales: (r as any).matchedSales ?? null,
+          totalSales: (r as any).totalSales ?? null,
+        };
       },
       true,
     );

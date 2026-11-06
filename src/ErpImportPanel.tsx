@@ -280,6 +280,7 @@ function EcountImportPanel({
 }
 
 export default function ErpImportPanel(props: {
+  onOpenInvoices: () => void;
   onSalesList: (id: string) => void;
   date: string;
   disabled: boolean;

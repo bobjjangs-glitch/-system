@@ -53,6 +53,31 @@ export class CompanySalesList {
     if (!validSalesDate(serviceDate))
       failure("배송 예정일을 확인해 주세요.", 400);
     const result = await this.erp.browseSales(salesDate);
+    return this.persistList(result, serviceDate);
+  }
+  async reference(reference: string, serviceDate: string) {
+    if (!validSalesDate(serviceDate))
+      failure("배송 예정일을 확인해 주세요.", 400);
+    const result = await this.erp.invoice(reference);
+    return this.persistList(
+      {
+        documents: [result.document],
+        salesDate:
+          parseSalesReference(reference)?.date ?? result.document.saleDate,
+        sourceReadAt: result.sourceReadAt,
+      },
+      serviceDate,
+    );
+  }
+  private persistList(
+    result: {
+      documents: SalesDocument[];
+      salesDate: string;
+      sourceReadAt: string;
+    },
+    serviceDate: string,
+  ) {
+    const salesDate = result.salesDate;
     const id = randomUUID(),
       storedName = id + ".json",
       at = new Date().toISOString();

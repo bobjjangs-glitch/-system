@@ -35,6 +35,7 @@ import {
   ClipboardList,
   Clock3,
   FileSpreadsheet,
+  FileText,
   History,
   LayoutDashboard,
   LocateFixed,
@@ -103,6 +104,7 @@ import { parseSalesReference } from "./src/salesReference";
 import CatalogPicker from "./src/CatalogPicker";
 import { invoiceProduct, invoiceCustomer } from "./src/invoiceCatalog";
 import InvoiceItemsEditor from "./src/InvoiceItemsEditor";
+import InvoiceLookupPanel from "./src/InvoiceLookupPanel";
 import CompanySalesBrowser from "./src/CompanySalesBrowser";
 import SalesInvoiceStatement from "./src/SalesInvoiceStatement";
 import type { SalesDocument } from "./src/salesDocuments";
@@ -674,6 +676,7 @@ const tabs = [
   { id: "routes", label: "배차", icon: RouteIcon },
   { id: "drivers", label: "기사", icon: Users },
   { id: "history", label: "내역", icon: History },
+  { id: "invoices", label: "명세서", icon: FileText },
 ] as const;
 function Admin({
   user,
@@ -1683,9 +1686,11 @@ function Admin({
                   ? "전표를 배송으로"
                   : tab === "routes"
                     ? "가장 편한 배송 코스"
-                    : tab === "drivers"
-                      ? "함께 달리는 기사님"
-                      : "지난 배송도 한눈에"}
+                    : tab === "invoices"
+                      ? "거래명세서 조회"
+                      : tab === "drivers"
+                        ? "함께 달리는 기사님"
+                        : "지난 배송도 한눈에"}
             </Text>
           </View>
           {width > 520 && (
@@ -2043,6 +2048,7 @@ function Admin({
               }
             />
             <ErpImportPanel
+              onOpenInvoices={() => setTab("invoices")}
               onSalesList={setSalesBrowserId}
               date={date}
               disabled={busy || !!uploadProgress || !!review}
@@ -2592,6 +2598,9 @@ function Admin({
             ))}
           </>
         )}
+        {tab === "invoices" && (
+          <InvoiceLookupPanel date={date} onSalesList={setSalesBrowserId} />
+        )}
         {tab === "history" && (
           <>
             <DateControls date={date} setDate={setDate} />
@@ -2920,22 +2929,6 @@ function Admin({
                           : "거래처 선택 후 확인"}{" "}
                       (ERP 거래처 기본 구분)
                     </Text>
-                    <Field
-                      label="고객명"
-                      value={row.invoiceCustomerName ?? ""}
-                      onChangeText={(invoiceCustomerName) =>
-                        updateReview(index, { invoiceCustomerName })
-                      }
-                      editable={!review.erpSaleLocked}
-                    />
-                    <Field
-                      label="차량번호"
-                      value={row.invoiceVehicleNo ?? ""}
-                      onChangeText={(invoiceVehicleNo) =>
-                        updateReview(index, { invoiceVehicleNo })
-                      }
-                      editable={!review.erpSaleLocked}
-                    />
                   </>
                 )}
                 <View style={{ marginBottom: 12 }}>
@@ -3123,6 +3116,10 @@ function Admin({
       <CompanySalesBrowser
         batchId={salesBrowserId}
         onClose={() => setSalesBrowserId(null)}
+        onFindInvoice={() => {
+          setSalesBrowserId(null);
+          setTab("invoices");
+        }}
         onSaved={(value) => {
           setDate(value);
           refresh().catch((e) => tell(e.message));

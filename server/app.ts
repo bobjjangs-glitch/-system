@@ -1,3 +1,4 @@
+import {APP_VERSION,APP_REVISION} from "./buildInfo.ts";
 import { CompanySalesList } from "./companySalesList.ts";
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
@@ -273,7 +274,7 @@ export function createDispatchApp(
   );
   app.use(express.json({ limit: "2mb" }));
   app.get("/api/health", (_req, res) =>
-    res.json({ ok: true, service: "bareun-dispatch" }),
+    res.json({ ok: true, service: "bareun-dispatch", version:APP_VERSION, revision:APP_REVISION }),
   );
   app.get("/api/setup", (_req, res) =>
     res.json({
@@ -763,6 +764,9 @@ export function createDispatchApp(
       mode: companyErp.status().configured ? "company-erp" : "ecount-api",
       company: companyErp.status(),
       direct: ecount.status(),
+      version:APP_VERSION,
+      revision:APP_REVISION,
+      invoiceReferenceLookup:true,
       salesInvoiceBrowser: true,
       salesDateFilter: true,
       regionalDispatch: true,
@@ -790,6 +794,17 @@ export function createDispatchApp(
   app.post("/api/company-erp/catalog/:kind/sync", admin, async (req, res) => {
     assert(["customers", "products"].includes(String(req.params.kind)), "조회 항목을 확인해 주세요.");
     res.json(await companyErp.sync(req.params.kind as "customers" | "products"));
+  });
+  app.get("/api/company-erp/connection", admin, async (req, res) =>
+    res.json({ version: APP_VERSION, ...await companyErp.connection(dateValue(req.query.date)) }),
+  );
+  app.get("/api/company-erp/invoices", admin, async (req, res) => {
+    assert(typeof req.query.reference === "string", "전표번호를 입력해 주세요.", 400);
+    res.json(await companyErp.invoice(req.query.reference));
+  });
+  app.post("/api/company-erp/sales/reference-list", admin, async (req, res) => {
+    assert(typeof req.body.reference === "string", "전표번호를 입력해 주세요.", 400);
+    res.status(201).json(await salesLists.reference(req.body.reference, dateValue(req.body.serviceDate)));
   });
   app.post("/api/company-erp/sales/lists", admin, async (req, res) =>
     res.status(201).json(await salesLists.fetch(

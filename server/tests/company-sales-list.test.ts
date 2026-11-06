@@ -79,6 +79,7 @@ async function fixture(t: any) {
         schema: state.schema,
         ok: true,
         scope: state.scope,
+        dateMode: "reference-or-date",
         invoiceVersion: state.invoiceVersion,
         kind: "sales",
         instanceId: instance,

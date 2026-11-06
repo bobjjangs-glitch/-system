@@ -11,6 +11,8 @@ export type SalesDocument = {
   sourceKey: string;
   reference: string;
   saleDate: string;
+  referenceDate?: string;
+  saleDateInferred?: boolean;
   status: "draft" | "confirmed" | "canceled";
   channel: string;
   paymentMethod: string;

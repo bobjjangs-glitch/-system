@@ -9,11 +9,13 @@ export default function CompanyErpPanel({
   date,
   disabled,
   onSalesList,
+  onOpenInvoices,
 }: {
   date: string;
   disabled: boolean;
   onReview?: unknown;
   onSalesList: (id: string) => void;
+  onOpenInvoices: () => void;
 }) {
   const [status, setStatus] = useState<ErpStatus | null>(null),
     [salesDate, setSalesDate] = useState(date),
@@ -146,12 +148,13 @@ export default function CompanyErpPanel({
           disabled={locked}
         />
       </View>
-      {status && !status.salesInvoiceBrowser && (
-        <Text style={{ color: C.amber, marginBottom: 12 }}>
-          판매목록·거래명세서 기능을 사용하려면 Render 서버를 최신 버전으로
-          배포해 주세요.
-        </Text>
-      )}
+      {status &&
+        (!status.salesInvoiceBrowser || !status.invoiceReferenceLookup) && (
+          <Text style={{ color: C.amber, marginBottom: 12 }}>
+            전표번호·날짜 조회를 사용하려면 Render 서버를 1.11.0 이상으로 배포해
+            주세요. 이전 서버에서는 조회를 진행하지 않습니다.
+          </Text>
+        )}
       <Field
         label="판매 조회 일자"
         value={salesDate}
@@ -170,7 +173,10 @@ export default function CompanyErpPanel({
         }
         onPress={() => run("sales")}
         disabled={
-          locked || !validSalesDate(salesDate) || !status?.salesInvoiceBrowser
+          locked ||
+          !validSalesDate(salesDate) ||
+          !status?.salesInvoiceBrowser ||
+          !status.invoiceReferenceLookup
         }
       />
       {lastList && (
@@ -179,14 +185,27 @@ export default function CompanyErpPanel({
             title={`마지막 판매조회 목록 보기 · ${lastList.count}건`}
             secondary
             onPress={() => onSalesList(lastList.id)}
-            disabled={disabled || !!busy}
+            disabled={disabled || !!busy || !status?.invoiceReferenceLookup}
           />
         </View>
       )}
+      <View style={{ marginTop: 10 }}>
+        <Button
+          title="전표번호로 명세서 찾기"
+          secondary
+          onPress={onOpenInvoices}
+          disabled={!!busy || disabled}
+        />
+      </View>
       <Text style={[s.muted, { marginTop: 12 }]}>
         거래처 · {readTime(company?.reads.customers?.at)}
         {"\n"}품목 · {readTime(company?.reads.products?.at)}
-        {"\n"}판매전표 · {readTime(company?.reads.sales?.at)}
+        {"\n"}판매전표 ·{" "}
+        {company?.failures?.sales
+          ? "마지막 조회 실패"
+          : company?.reads.sales
+            ? `${company.reads.sales.count}건 · ${readTime(company.reads.sales.at)}`
+            : "아직 조회하지 않았습니다"}
       </Text>
       {!!message && (
         <Text
@@ -196,7 +215,12 @@ export default function CompanyErpPanel({
           {message}
         </Text>
       )}
-      {!!company?.lastError && !error && (
+      {!!company?.failures?.sales && !error && (
+        <Text accessibilityRole="alert" style={{ color: C.red, marginTop: 12 }}>
+          {company.failures.sales.message}
+        </Text>
+      )}
+      {!!company?.lastError && !company?.failures?.sales && !error && (
         <Text style={{ color: C.red, marginTop: 12 }}>{company.lastError}</Text>
       )}
       {!!error && (

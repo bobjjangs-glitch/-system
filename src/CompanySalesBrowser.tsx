@@ -19,10 +19,12 @@ export default function CompanySalesBrowser({
   batchId,
   onClose,
   onSaved,
+  onFindInvoice,
 }: {
   batchId: string | null;
   onClose: () => void;
   onSaved: (date: string) => void;
+  onFindInvoice?: () => void;
 }) {
   const [list, setList] = useState<SalesList | null>(null),
     [error, setError] = useState(""),
@@ -213,8 +215,15 @@ export default function CompanySalesBrowser({
               <Text style={[s.muted, { marginVertical: 20 }]}>
                 {list.documents.length
                   ? "검색 조건과 일치하는 전표가 없습니다."
-                  : "선택 날짜의 판매전표가 없습니다. ERP 판매일자와 상태를 확인해 주세요."}
+                  : `${list.salesDate}의 ERP 판매일자·전표번호 날짜로 조회한 결과가 0건입니다. 번호를 알고 있다면 명세서 메뉴에서 직접 조회해 주세요.`}
               </Text>
+            )}
+            {!list.documents.length && onFindInvoice && (
+              <Button
+                title="전표번호로 명세서 직접 찾기"
+                secondary
+                onPress={onFindInvoice}
+              />
             )}
             {filtered.slice(0, visibleCount).map((doc) => (
               <Card key={doc.sourceKey} style={{ marginTop: 12 }}>

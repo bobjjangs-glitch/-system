@@ -3,7 +3,11 @@ import type { Item } from "./types.ts";
 import type { SalesDocument, InvoiceParty } from "../src/salesDocuments.ts";
 import { dispatchBlockReason } from "../src/salesDocuments.ts";
 import { CompanyErpError } from "./companyErp.ts";
-import { validSalesDate, parseSalesReference } from "../src/salesReference.ts";
+import {
+  validSalesDate,
+  parseSalesReference,
+  readSalesDate,
+} from "../src/salesReference.ts";
 const fail = () => {
   throw new CompanyErpError(
     "INVOICE_FORMAT",
@@ -40,19 +44,20 @@ export function normalizeSalesDocument(
   instanceId: string,
   date: string,
 ): SalesDocument {
-  const sourceId = str(row.id, 20),
-    reference = str(row.reference, 200);
+  const reference = str(row.reference, 200),
+    parsed = parseSalesReference(reference);
+  const rawDate = readSalesDate(String(row.saleDate ?? "").slice(0, 10));
+  const actualDate = rawDate ?? parsed?.date ?? null;
+  const sourceId = str(row.id, 20);
   if (
     !/^[1-9][0-9]{0,14}$/.test(sourceId) ||
-    !validSalesDate(row.saleDate) ||
-    row.saleDate !== date ||
+    !actualDate ||
     !["draft", "confirmed", "canceled"].includes(row.status) ||
     !Array.isArray(row.items) ||
     row.items.length > 1000
   )
     return fail();
-  const parsed = parseSalesReference(reference);
-  if (parsed && parsed.date !== date) return fail();
+  if (actualDate !== date && parsed?.date !== date) return fail();
   const items: Item[] = row.items.map((l: any) => {
     const quantity = Number(l.quantity);
     if (
@@ -98,7 +103,11 @@ export function normalizeSalesDocument(
     sourceId,
     sourceKey,
     reference,
-    saleDate: date,
+    saleDate: actualDate!,
+    ...(!rawDate ? { saleDateInferred: true } : {}),
+    ...(parsed && parsed.date !== actualDate
+      ? { referenceDate: parsed.date }
+      : {}),
     status: row.status as SalesDocument["status"],
     channel: str(row.channel ?? "", 30),
     paymentMethod: str(row.paymentMethod ?? "", 40),

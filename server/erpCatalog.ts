@@ -1,3 +1,4 @@
+import { tireSizeQuery, productMatchesTireSize } from "../src/tireSearch.ts";
 import ExcelJS from "exceljs";
 import { loadSpreadsheet } from "./spreadsheet.ts";
 import { createHash } from "node:crypto";
@@ -249,6 +250,19 @@ export function searchCatalog(
   kind: "customers" | "products",
   query: string,
 ) {
+  const tire = kind === "products" ? tireSizeQuery(query) : null;
+  if (tire) {
+    let expr = "LOWER(name||' '||specification)";
+    for (const c of [" ", "/", "-", "r", "z", "\t", "\n"])
+      expr = `REPLACE(${expr},'${c}','')`;
+    return store
+      .all(
+        `SELECT * FROM catalog_products AS catalog WHERE ${expr} LIKE ? AND (source!='ecount' OR NOT EXISTS (SELECT 1 FROM catalog_products AS live WHERE live.code=catalog.code AND live.source='ecount-api')) ORDER BY (source='ecount-api') DESC,updatedAt DESC LIMIT 10000`,
+        "%" + tire.compact + "%",
+      )
+      .filter((r) => productMatchesTireSize(r.name, r.specification, tire))
+      .slice(0, 30);
+  }
   const q = key(query).slice(0, 100);
   const pattern = "%" + q.replace(/[\\%_]/g, "\\$&") + "%";
   const tableName =

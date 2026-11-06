@@ -49,7 +49,8 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
     $q = $query['q'] ?? ''; $date = $query['date'] ?? '';
     if (!is_string($q) || strlen($q) > 400) throw new InvalidArgumentException('검색어를 줄여 주세요.');
     if ($kind === 'sales' && (!is_string($date) || !bd_date($date))) throw new InvalidArgumentException('판매일자를 YYYY-MM-DD 형식으로 입력해 주세요.');
-    if ($kind === 'sales' && ($query['scope'] ?? '') === 'all') return bd_sales_documents($pdo, $query, $instance);
+    if ($kind === 'sales' && in_array(($query['scope'] ?? ''), ['all','invoice'], true)) return bd_sales_documents($pdo, $query, $instance);
+    if ($kind === 'sales' && ($query['scope'] ?? '') === 'capabilities') return bd_capabilities($pdo,$query,$instance);
     $code = $kind !== 'products' ? bd_code_column($pdo) : "''";
     $args = []; $excluded = ['draft' => 0, 'canceled' => 0];
     if ($kind === 'customers') {
@@ -69,8 +70,15 @@ function bd_read(PDO $pdo, string $kind, array $query, string $instance): array 
         $itemCols=bd_columns($pdo,'erp_items');$factory=bd_optional($itemCols,['factory_price','list_price'],'i.','NULL');
         $fields.=", ".$factory;$select.=", ".$factory.' AS factoryPrice';
         if (trim($q) !== '') {
-            $where .= " AND CONCAT_WS(' ', i.item_code, i.name, i.spec, i.brand, i.pattern_name) LIKE ?";
-            $args[] = '%' . addcslashes(trim($q), '%_\\') . '%';
+            $sizeParts=bd_tire_size($q);
+            if($sizeParts){
+                $wanted=bd_tire_pattern($sizeParts);$any=bd_tire_pattern(['[1-9][0-9]{2}','[1-9][0-9]','(1[0-9]|2[0-9]|3[0-9]|40)']);
+                $where.=" AND (UPPER(i.spec) REGEXP ? OR (NOT (UPPER(i.spec) REGEXP ?) AND UPPER(i.name) REGEXP ?))";
+                array_push($args,$wanted,$any,$wanted);
+            }else{
+                $where .= " AND CONCAT_WS(' ', i.item_code, i.name, i.spec, i.brand, i.pattern_name) LIKE ?";
+                $args[] = '%' . addcslashes(trim($q), '%_\\') . '%';
+            }
         }
         $id = 'i.id';
     } else {
@@ -139,7 +147,15 @@ function bd_supplier(): array {
 function bd_sales_documents(PDO $pdo,array $query,string $instance): array {
     $date=$query['date'];$after=(int)($query['cursor']??'0');$size=(int)($query['limit']??'50');
     $tc=bd_columns($pdo,'erp_trades');$lc=bd_columns($pdo,'erp_trade_lines');$ic=bd_columns($pdo,'erp_items');$pc=bd_columns($pdo,'erp_partners');
-    $code=bd_code_column($pdo);$from='erp_trades t LEFT JOIN erp_partners p ON p.id=t.partner_id';$where="t.trade_type='sale' AND t.trade_date=?";$args=[$date];
+    $code=bd_code_column($pdo);$from='erp_trades t LEFT JOIN erp_partners p ON p.id=t.partner_id';
+    $scope=$query['scope']??'all';
+    if($scope==='invoice'){
+        $reference=$query['reference']??'';
+        if(!is_string($reference)||strlen($reference)>60||!preg_match('/^[A-Za-z0-9][A-Za-z0-9.\/_-]*$/D',$reference))throw new InvalidArgumentException('전표번호를 확인해 주세요.');
+        $exact=$pdo->prepare("SELECT COUNT(*) FROM erp_trades WHERE trade_type='sale' AND trade_no=?");$exact->execute([$reference]);
+        $aliases=(int)$exact->fetchColumn()>0?[$reference]:bd_reference_aliases($reference);
+        $where="t.trade_type='sale' AND t.trade_no IN (".implode(',',array_fill(0,count($aliases),'?')).")";$args=$aliases;
+    }else{$where="t.trade_type='sale' AND (DATE(t.trade_date)=? OR t.trade_no REGEXP ?)";$args=[$date,bd_reference_date_pattern($date)];}
     $addr=in_array('delivery_addr',$tc,true)?"COALESCE(NULLIF(t.delivery_addr,''),p.address,'')":"COALESCE(p.address,'')";
     $phone=in_array('delivery_phone',$tc,true)?"COALESCE(NULLIF(t.delivery_phone,''),p.phone,'')":"COALESCE(p.phone,'')";
     $recipient=in_array('delivery_recipient',$tc,true)?"COALESCE(NULLIF(t.delivery_recipient,''),NULLIF(p.name,''),t.customer_name,'')":"COALESCE(NULLIF(p.name,''),t.customer_name,'')";
@@ -154,14 +170,44 @@ function bd_sales_documents(PDO $pdo,array $query,string $instance): array {
     $gross=in_array('dispatch_total',$lc,true)?'l.dispatch_total':'NULL';
     $lineFields="l.id,l.trade_id,l.line_no,l.item_id,l.item_name,l.spec,l.tax_type,l.qty,l.unit_price,l.amount,l.memo,$pattern,$itemCode,$factory,$dc,$gross";
     $linesDigest=bd_digest($pdo,'erp_trade_lines l JOIN erp_trades t ON t.id=l.trade_id LEFT JOIN erp_items i ON i.id=l.item_id',$where,$args,$lineFields);
-    $supplier=bd_supplier();$snapshot=hash('sha256',json_encode([$instance,$date,$headers,$linesDigest,$supplier]));
+    $supplier=bd_supplier();$snapshot=hash('sha256',json_encode([$instance,$date,$scope,$query['reference']??'',$headers,$linesDigest,$supplier]));
     if(isset($query['snapshot'])&&(!is_string($query['snapshot'])||!hash_equals($snapshot,$query['snapshot'])))throw new DomainException('조회 중 판매전표가 바뀌었습니다. 다시 가져와 주세요.');
-    $st=$pdo->prepare("SELECT t.id,t.trade_no AS reference,t.trade_date AS saleDate,t.status,t.channel,t.partner_id AS erpCustomerId,t.customer_name AS customerName,t.vehicle_no AS vehicleNo,t.supply_amount AS supplyAmount,t.vat_amount AS vatAmount,t.total_amount AS amount,t.memo AS notes,$code AS customerCode,$addr AS address,$phone AS phone,$recipient AS recipient,$pay AS paymentMethod,$cancel AS cancelReason,COALESCE(p.name,t.customer_name,'') AS buyerName,COALESCE(p.business_no,'') AS buyerBusinessNumber,COALESCE(p.ceo_name,'') AS buyerRepresentative,COALESCE(p.address,'') AS buyerAddress,COALESCE(p.phone,'') AS buyerPhone FROM $from WHERE $where AND t.id>? ORDER BY t.id LIMIT ".($size+1));
-    $st->execute([$date,$after]);$rows=$st->fetchAll(PDO::FETCH_ASSOC);$more=count($rows)>$size;if($more)array_pop($rows);
+    $st=$pdo->prepare("SELECT t.id,t.trade_no AS reference,DATE_FORMAT(t.trade_date,'%Y-%m-%d') AS saleDate,t.status,t.channel,t.partner_id AS erpCustomerId,t.customer_name AS customerName,t.vehicle_no AS vehicleNo,t.supply_amount AS supplyAmount,t.vat_amount AS vatAmount,t.total_amount AS amount,t.memo AS notes,$code AS customerCode,$addr AS address,$phone AS phone,$recipient AS recipient,$pay AS paymentMethod,$cancel AS cancelReason,COALESCE(p.name,t.customer_name,'') AS buyerName,COALESCE(p.business_no,'') AS buyerBusinessNumber,COALESCE(p.ceo_name,'') AS buyerRepresentative,COALESCE(p.address,'') AS buyerAddress,COALESCE(p.phone,'') AS buyerPhone FROM $from WHERE $where AND t.id>? ORDER BY t.id LIMIT ".($size+1));
+    $st->execute(array_merge($args,[$after]));$rows=$st->fetchAll(PDO::FETCH_ASSOC);$more=count($rows)>$size;if($more)array_pop($rows);
     if($rows){$ids=array_column($rows,'id');$marks=implode(',',array_fill(0,count($ids),'?'));
         $st=$pdo->prepare("SELECT l.id,l.trade_id,l.line_no AS lineNo,l.item_id AS erpItemId,l.item_name AS name,l.spec AS specification,l.qty AS quantity,l.unit_price AS unitPrice,l.amount AS supplyAmount,l.tax_type AS taxType,l.memo AS remarks,$pattern AS pattern,$itemCode AS code,$factory AS factoryPrice,$dc AS discountRate,$gross AS totalAmount FROM erp_trade_lines l LEFT JOIN erp_items i ON i.id=l.item_id WHERE l.trade_id IN ($marks) ORDER BY l.trade_id,l.line_no,l.id LIMIT 10001");$st->execute($ids);$lines=$st->fetchAll(PDO::FETCH_ASSOC);if(count($lines)>10000)throw new LengthException('전표 품목이 너무 많습니다.');
         $by=[];foreach($lines as $l){$tid=$l['trade_id'];unset($l['trade_id']);$l['id']=(string)$l['id'];$l['erpItemId']=(string)$l['erpItemId'];$l['amountBasis']=$l['totalAmount']===null?'supply':'total';$l['listPrice']=$l['factoryPrice'];$by[$tid][]=$l;}
         foreach($rows as &$r){$r['id']=(string)$r['id'];$r['erpCustomerId']=(string)$r['erpCustomerId'];$r['items']=$by[$r['id']]??[];$r['supplier']=$supplier;$r['buyer']=['name'=>$r['buyerName'],'businessNumber'=>$r['buyerBusinessNumber'],'representative'=>$r['buyerRepresentative'],'address'=>$r['buyerAddress'],'phone'=>$r['buyerPhone']];foreach(['buyerName','buyerBusinessNumber','buyerRepresentative','buyerAddress','buyerPhone'] as $k)unset($r[$k]);}unset($r);
     }
-    return ['schema'=>2,'ok'=>true,'kind'=>'sales','scope'=>'all','invoiceVersion'=>1,'instanceId'=>$instance,'snapshot'=>$snapshot,'total'=>$headers[0],'cursor'=>(string)$after,'nextCursor'=>$more?(string)end($rows)['id']:null,'readAt'=>gmdate('Y-m-d\TH:i:s\Z'),'date'=>$date,'excluded'=>['draft'=>0,'canceled'=>0],'items'=>$rows];
+    return ['schema'=>2,'ok'=>true,'kind'=>'sales','dateMode'=>'reference-or-date','scope'=>$scope,'invoiceVersion'=>$scope==='invoice'?2:1,'instanceId'=>$instance,'snapshot'=>$snapshot,'total'=>$headers[0],'cursor'=>(string)$after,'nextCursor'=>$more?(string)end($rows)['id']:null,'readAt'=>gmdate('Y-m-d\TH:i:s\Z'),'date'=>$date,'excluded'=>['draft'=>0,'canceled'=>0],'items'=>$rows];
+}
+
+function bd_tire_size(string $q): ?array {
+    $q=strtoupper(mb_convert_kana(trim($q),'as','UTF-8'));
+    if(!preg_match('/^(\d{3})\s*(?:[\/ -])?\s*(\d{2})\s*(?:ZR|R|Z|[-\s])?\s*(\d{2})$/D',$q,$m))return null;
+    if((int)$m[1]<100||(int)$m[2]<10||(int)$m[3]<10||(int)$m[3]>40)return null;
+    return [$m[1],$m[2],$m[3]];
+}
+function bd_tire_pattern(array $p): string {
+    return '(^|[^0-9])'.$p[0].'[[:space:]]*[/-]?[[:space:]]*'.$p[1].'[[:space:]]*(ZR|R|Z)?[[:space:]-]*'.$p[2].'([^0-9]|$)';
+}
+function bd_reference_date_pattern(string $date): string {
+    $d=new DateTimeImmutable($date);$m=(int)$d->format('n');$day=(int)$d->format('j');
+    $month=$m<10?'0?'.$m:(string)$m;$dom=$day<10?'0?'.$day:(string)$day;
+    return '^((SL-)?'.$d->format('Ymd').'|('.$d->format('Y').'|'.$d->format('y').')[/.-]'.$month.'[/.-]'.$dom.')-[0-9]+$';
+}
+function bd_reference_aliases(string $ref): array {
+    if(!preg_match('/^(.+)-(\d{1,12})$/D',$ref,$m))return [$ref];
+    $part=str_replace(['/','.'],'-',$m[1]);
+    if(preg_match('/^(\d{4})(\d{2})(\d{2})$/D',$part,$d))$date=$d[1].'-'.$d[2].'-'.$d[3];
+    elseif(preg_match('/^(\d{2}|\d{4})-(\d{1,2})-(\d{1,2})$/D',$part,$d))$date=(strlen($d[1])===2?'20':'').$d[1].'-'.str_pad($d[2],2,'0',STR_PAD_LEFT).'-'.str_pad($d[3],2,'0',STR_PAD_LEFT);
+    else return [$ref];
+    if(!bd_date($date))return [$ref];$day=new DateTimeImmutable($date);$seq=ltrim($m[2],'0');if($seq==='')$seq='0';
+    return array_values(array_unique([$ref,$day->format('Ymd').'-'.$seq,$day->format('Y/m/d').'-'.$seq,$day->format('y/m/d').'-'.$seq,'SL-'.$day->format('Ymd').'-'.str_pad($seq,4,'0',STR_PAD_LEFT)]));
+}
+function bd_capabilities(PDO $pdo,array $query,string $instance):array {
+    $date=$query['date'];
+    $st=$pdo->prepare("SELECT COUNT(*) FROM erp_trades WHERE trade_type='sale' AND (DATE(trade_date)=? OR trade_no REGEXP ?)");$st->execute([$date,bd_reference_date_pattern($date)]);
+    $matched=(int)$st->fetchColumn();
+    return ['schema'=>2,'ok'=>true,'kind'=>'sales','scope'=>'capabilities','invoiceVersion'=>2,'bridgeVersion'=>'1.11.0','referenceLookup'=>true,'compactTireSearch'=>true,'verticalInvoice'=>true,'instanceId'=>$instance,'snapshot'=>hash('sha256',$instance.$date),'total'=>0,'cursor'=>'0','nextCursor'=>null,'readAt'=>gmdate('Y-m-d\TH:i:s\Z'),'date'=>$date,'excluded'=>['draft'=>0,'canceled'=>0],'items'=>[],'matchedSales'=>$matched,'totalSales'=>(int)$pdo->query("SELECT COUNT(*) FROM erp_trades WHERE trade_type='sale'")->fetchColumn()];
 }

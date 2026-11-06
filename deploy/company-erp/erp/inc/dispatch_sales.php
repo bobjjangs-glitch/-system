@@ -14,7 +14,7 @@ function bds_install(PDO $pdo): void {
 }
 function bds_today(): string { return (new DateTimeImmutable('now',new DateTimeZone('Asia/Seoul')))->format('Y-m-d'); }
 function bds_max(PDO $pdo,string $date): int {
-    $st=$pdo->prepare("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(trade_no,'-',-1) AS UNSIGNED)),0) FROM erp_trades WHERE trade_type='sale' AND trade_date=? AND trade_no REGEXP '-[0-9]+$'");$st->execute([$date]);return (int)$st->fetchColumn();
+    $st=$pdo->prepare("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(trade_no,'-',-1) AS UNSIGNED)),0) FROM erp_trades WHERE trade_type='sale' AND (DATE(trade_date)=? OR trade_no REGEXP ?) AND trade_no REGEXP '-[0-9]+$'");$st->execute([$date,bd_reference_date_pattern($date)]);return (int)$st->fetchColumn();
 }
 function bds_context(PDO $pdo,array $config): array {
     $date=bds_today();$prefix=$config['sequence_prefix']??'SL';
