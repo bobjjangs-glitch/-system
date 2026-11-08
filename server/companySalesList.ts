@@ -49,33 +49,50 @@ export class CompanySalesList {
       : dispatchBlockReason(doc);
     return { ...doc, registered, eligible: !reason, reason };
   }
+  /** Live polling reads ERP documents without creating saved import/history files. */
+  async preview(salesDate: string, serviceDate: string): Promise<SalesList & { live: true }> {
+    if (!validSalesDate(salesDate))
+      failure("판매일자를 확인해 주세요.", 400);
+    if (!validSalesDate(serviceDate))
+      failure("배송 예정일을 확인해 주세요.", 400);
+    const result = await this.erp.browseSales(salesDate);
+    return {
+      id: `live:${salesDate}:${serviceDate}`,
+      salesDate,
+      serviceDate,
+      sourceReadAt: result.sourceReadAt,
+      documents: result.documents.map((doc) => this.decorate(doc)),
+      historical: false,
+      live: true,
+    };
+  }
   async fetch(salesDate: string, serviceDate: string) {
     if (!validSalesDate(serviceDate))
       failure("배송 예정일을 확인해 주세요.", 400);
     const result = await this.erp.browseSales(salesDate);
     return this.persistList(result, serviceDate);
   }
-  async reference(reference: string, serviceDate: string, sourceSystem?: "native-archive" | "legacy") {
+  async reference(reference: string, serviceDate: string, sourceSystem?: "native-archive" | "legacy", documentId?: string) {
     if (!validSalesDate(serviceDate))
       failure("배송 예정일을 확인해 주세요.", 400);
-    const result = await this.erp.invoice(reference,sourceSystem);
+    const result = await this.erp.invoice(reference,sourceSystem,documentId);
     return this.persistList(
       {
         documents: [result.document],
         salesDate:
-          parseSalesReference(reference)?.date ?? result.document.saleDate,
+          parseSalesReference(documentId ? result.document.reference : reference)?.date ?? result.document.saleDate,
         sourceReadAt: result.sourceReadAt,
       },
       serviceDate,
     );
   }
-  async confirmReference(reference: string, fingerprint: string, serviceDate: string, delivery?: unknown, sourceSystem?: "native-archive" | "legacy") {
+  async confirmReference(reference: string, fingerprint: string, serviceDate: string, delivery?: unknown, sourceSystem?: "native-archive" | "legacy", documentId?: string) {
     if (!/^[a-f0-9]{64}$/.test(fingerprint) || !validSalesDate(serviceDate))
       failure("확인할 전표와 배송일을 확인해 주세요.",400);
-    const result = await this.erp.invoice(reference,sourceSystem);
+    const result = await this.erp.invoice(reference,sourceSystem,documentId);
     if (result.document.fingerprint !== fingerprint)
       failure("ERP 전표가 확인 중 변경되었습니다. 전표번호를 다시 눌러 최신 내용을 확인해 주세요.");
-    const list = this.persistList({ documents: [result.document], salesDate: parseSalesReference(reference)?.date ?? result.document.saleDate,
+    const list = this.persistList({ documents: [result.document], salesDate: parseSalesReference(documentId ? result.document.reference : reference)?.date ?? result.document.saleDate,
       sourceReadAt: result.sourceReadAt }, serviceDate);
     return this.dispatch(list.id, { sourceKeys: [result.document.sourceKey], serviceDate,
       deliveryOverrides: delivery ? { [result.document.sourceKey]: delivery } : {} });

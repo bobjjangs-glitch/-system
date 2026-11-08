@@ -183,6 +183,8 @@ export class CompanyErpClient {
   status() {
     return {
       provider: "company-erp",
+      providerLabel: "회사 자체 ERP",
+      externalEcount: false,
       configured: this.valid,
       apiUrl: this.urlValid ? this.url : DEFAULT_COMPANY_ERP_URL,
       missing: [
@@ -884,6 +886,8 @@ export class CompanyErpClient {
         if (!validSalesDate(date))
           throw new CompanyErpError("DATE", "판매일자를 확인해 주세요.", 400);
         const primary = await this.all("sales", date, "all");
+        if (primary.sourceSystem === "native-archive" && primary.items.some(row => row.sourceSystem !== "native-archive"))
+          throw new CompanyErpError("NATIVE_SOURCE_REQUIRED", "ERP 원본 판매 저장소와 전표의 출처가 다릅니다. 연결 파일을 확인해 주세요.", 502);
         const secondary = primary.sourceSystem === "native-archive" && primary.legacyAvailable
           ? await this.all("sales",date,"all","legacy") : null;
         if (secondary && secondary.instanceId !== primary.instanceId)
@@ -924,8 +928,10 @@ export class CompanyErpClient {
       true,
     );
   }
-  async invoice(reference: string, sourceSystem?: "native-archive" | "legacy") {
+  async invoice(reference: string, sourceSystem?: "native-archive" | "legacy", documentId?: string) {
     if (sourceSystem !== undefined && !["native-archive","legacy"].includes(sourceSystem)) throw new CompanyErpError("SOURCE", "ERP 자료 구분을 확인해 주세요.",400);
+    if (documentId !== undefined && (sourceSystem !== "native-archive" || typeof documentId !== "string" || !/^[1-9][0-9]{0,14}$/.test(documentId)))
+      throw new CompanyErpError("REFERENCE", "ERP 원본 전표 ID를 확인해 주세요.", 400);
     const input = reference.normalize("NFKC").replace(/\s+/g, "");
     if (!/^[A-Za-z0-9][A-Za-z0-9./_-]{0,59}$/.test(input))
       throw new CompanyErpError(
@@ -934,7 +940,7 @@ export class CompanyErpClient {
         400,
       );
     return this.track(
-      "invoice-" + (sourceSystem??"default") + "-" + input,
+      "invoice-" + (sourceSystem??"default") + "-" + input + "-" + (documentId ?? ""),
       async () => {
         const parsed = parseSalesReference(input),
           date =
@@ -944,7 +950,7 @@ export class CompanyErpClient {
             );
         let result = await this.page(
           "sales",
-          { scope: "invoice", reference: input, date, cursor: "0", limit: "2", ...(sourceSystem ? {sourceSystem} : {}) },
+          { scope: "invoice", reference: input, date, cursor: "0", limit: "2", ...(sourceSystem ? {sourceSystem} : {}), ...(documentId ? {documentId} : {}) },
           this.now() + 20000,
         );
         if (!sourceSystem && result.sourceSystem === "native-archive" && result.total === 0 && result.legacyAvailable)
@@ -955,6 +961,8 @@ export class CompanyErpClient {
             "전표번호 직접 조회에는 최신 ERP 연동 파일이 필요합니다. 최신 ZIP의 PHP 파일을 모두 함께 교체해 주세요.",
             502,
           );
+        if (sourceSystem === "native-archive" && result.sourceSystem !== "native-archive")
+          throw new CompanyErpError("NATIVE_SOURCE_REQUIRED", "회사 자체 ERP의 원본 판매 저장소가 연결되지 않았습니다. 최신 ERP 연동 PHP 파일을 모두 적용하고 연결 주소를 확인해 주세요.", 502);
         if (result.total === 0) {
           this.recordRead("sales", result.readAt, 0, date);
           throw new CompanyErpError(
@@ -981,11 +989,15 @@ export class CompanyErpClient {
           ref = parseSalesReference(row.reference),
           nativeReference = row.sourceSystem === "native-archive" ? String(row.sourceReference ?? "") : "",
           nativeRef = parseSalesReference(nativeReference);
-        if (
+        if ((sourceSystem === "native-archive" || result.sourceSystem === "native-archive") && row.sourceSystem !== "native-archive")
+          throw new CompanyErpError("NATIVE_SOURCE_REQUIRED", "ERP 원본 판매 저장소와 선택한 전표의 출처가 다릅니다. 연결 파일을 확인해 주세요.", 502);
+        if (documentId && (row.id !== documentId || row.sourceSystem !== "native-archive"))
+          throw new CompanyErpError("INVOICE_MISMATCH", "ERP가 선택한 원본 ID와 다른 전표를 반환했습니다. 다시 조회해 주세요.", 502);
+        if (!documentId && (
           String(row.reference).toUpperCase() !== input.toUpperCase() &&
           nativeReference.toUpperCase() !== input.toUpperCase() &&
           (!parsed || (ref?.canonical !== parsed.canonical && nativeRef?.canonical !== parsed.canonical))
-        )
+        ))
           throw new CompanyErpError(
             "INVOICE_MISMATCH",
             "ERP가 요청한 번호와 다른 전표를 반환했습니다.",
@@ -1002,6 +1014,16 @@ export class CompanyErpClient {
       },
       true,
     );
+  }
+  async verifyNativeConnection(date: string) {
+    return this.track("verify-native-sales-" + date, async () => {
+      const source = await this.connection(date);
+      const version = typeof source.bridgeVersion === "string" ? source.bridgeVersion.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/) : null;
+      const supported = !!version && (Number(version[1]) > 1 || (Number(version[1]) === 1 && Number(version[2]) >= 13));
+      if (!supported || source.sourceSystem !== "native-archive" || source.salesTable !== "erp_ecount_documents")
+        throw new CompanyErpError("NATIVE_SOURCE_REQUIRED", "회사 자체 ERP 원본 전표 연결을 확인하지 못했습니다. 구형 PHP 파일이나 다른 판매 저장소의 결과를 0건으로 표시하지 않았습니다. 닷홈에 최신 ERP 연동 PHP 7개를 적용하고 연결 주소를 확인해 주세요.", 502);
+      return source;
+    }, true);
   }
   async connection(date: string) {
     if (!validSalesDate(date))

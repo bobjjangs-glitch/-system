@@ -1,4 +1,7 @@
 export type CompanyErpConnection = {
+  provider?: "company-erp";
+  providerLabel?: string;
+  externalEcount?: false;
   configured: boolean;
   apiUrl: string;
   state: string;
@@ -27,8 +30,9 @@ export type ErpStatus = {
   salesDateFilter?: boolean;
   automaticCompanyCatalogs?: boolean;
   nativeArchiveInvoices?: boolean;
+  automaticDailySales?: boolean;
   company?: CompanyErpConnection;
 };
 export function readTime(value?: string | null) {
-  return value ? new Date(value).toLocaleString("ko-KR") : "조회 기록 없음";
+  return value ? new Date(value).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }) : "조회 기록 없음";
 }

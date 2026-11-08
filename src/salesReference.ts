@@ -39,3 +39,25 @@ export function parseSalesReference(value: unknown): SalesReference | null {
     canonical: date.replace(/-/g, "/") + "-" + sequence,
   };
 }
+
+/** Search the ERP's displayed number and archive alias as one date/sequence identity. */
+export function matchesSalesDocumentQuery(document: {
+  reference: string;
+  sourceReference?: string;
+  recipient?: string;
+  address?: string;
+  phone?: string;
+  items?: { name: string; code?: string }[];
+}, query: string): boolean {
+  const value = query.normalize("NFKC").trim().toLocaleLowerCase();
+  if (!value) return true;
+  const references = [document.reference, document.sourceReference ?? ""];
+  const parsed = parseSalesReference(value);
+  if (parsed) return references.some(reference => parseSalesReference(reference)?.canonical === parsed.canonical);
+  const compact = (text: string) => text.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const fields = [...references, ...references.map(reference => parseSalesReference(reference)?.canonical ?? ""),
+    document.recipient ?? "", document.address ?? "", document.phone ?? "",
+    ...(document.items ?? []).map(item => item.name + " " + (item.code ?? ""))];
+  const key = compact(value);
+  return fields.some(field => field.normalize("NFKC").toLocaleLowerCase().includes(value) || (!!key && compact(field).includes(key)));
+}

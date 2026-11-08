@@ -58,6 +58,8 @@ export type SalesList = {
   sourceReadAt: string;
   documents: SalesDocument[];
   historical?: boolean;
+  live?: boolean;
+  source?: { provider: "company-erp"; apiUrl: string; bridgeVersion: string; sourceSystem: "native-archive"; salesTable: string };
 };
 export const invoiceStatus = (status: string) =>
   ({ draft: "작성중", confirmed: "확정", canceled: "취소", imported: "ERP 보관 전표" })[status] ?? status;

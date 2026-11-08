@@ -4,7 +4,7 @@ import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { api } from "./api";
 import { Sheet, Button, Field, Card, C, s } from "./ui";
 import { readTime } from "./erpTypes";
-import { validSalesDate } from "./salesReference";
+import { matchesSalesDocumentQuery, validSalesDate } from "./salesReference";
 import { InvoiceContents } from "./SalesInvoiceStatement";
 import {
   invoiceMoney,
@@ -22,12 +22,16 @@ export default function CompanySalesBrowser({
   onSaved,
   onFindInvoice,
   onRecommend,
+  preview,
+  initialSourceKey,
 }: {
   batchId: string | null;
   onClose: () => void;
   onSaved: (date: string) => void;
   onFindInvoice?: () => void;
   onRecommend?: (date: string) => void;
+  preview?: SalesList | null;
+  initialSourceKey?: string | null;
 }) {
   const [list, setList] = useState<SalesList | null>(null),
     [error, setError] = useState(""),
@@ -57,7 +61,11 @@ export default function CompanySalesBrowser({
     setOverrides({});
     setMessage("");
     setQuery("");
-    if (batchId)
+    if (preview) {
+      setList(preview);
+      setServiceDate(preview.serviceDate);
+      setDetailKey(initialSourceKey ?? null);
+    } else if (batchId)
       api<SalesList>("/api/company-erp/sales/lists/" + batchId)
         .then((v) => {
           if (current) {
@@ -71,25 +79,14 @@ export default function CompanySalesBrowser({
     return () => {
       current = false;
     };
-  }, [batchId]);
+  }, [batchId, preview, initialSourceKey]);
   const filtered =
-    list?.documents.filter((d) =>
-      [
-        d.reference,
-        d.recipient,
-        d.address,
-        d.phone,
-        ...d.items.map((i) => i.name + " " + (i.code ?? "")),
-      ]
-        .join(" ")
-        .toLocaleLowerCase()
-        .includes(query.toLocaleLowerCase().trim()),
-    ) ?? [];
+    list?.documents.filter((d) => matchesSalesDocumentQuery(d, query)) ?? [];
   useEffect(() => {
     const doc = list?.documents.find(d => d.sourceKey === detailKey), controller = new AbortController();
     setDetail(null); setDetailError("");
     if (doc && list?.historical) { setDetail(doc); return () => controller.abort(); }
-    if (doc) api<{document: SalesDocument}>("/api/company-erp/invoices?reference="+encodeURIComponent(doc.reference)+"&sourceSystem="+encodeURIComponent(doc.sourceSystem??"legacy"), {signal: controller.signal})
+    if (doc) api<{document: SalesDocument}>("/api/company-erp/invoices?reference="+encodeURIComponent(doc.reference)+"&sourceSystem="+encodeURIComponent(doc.sourceSystem??"legacy")+(doc.sourceSystem === "native-archive" ? "&documentId="+encodeURIComponent(doc.sourceId) : ""), {signal: controller.signal})
       .then(value => { if (!controller.signal.aborted) setDetail({...value.document, registered:doc.registered, eligible:value.document.eligible && !doc.registered}); })
       .catch(e => { if (!controller.signal.aborted) setDetailError(e.message); });
     return () => controller.abort();
@@ -139,10 +136,17 @@ export default function CompanySalesBrowser({
     guard.current = true;setBusy(true);setDetailError("");
     try {
       const result = await api<{count:number;alreadyRegistered:number}>("/api/company-erp/sales/confirm-reference", {
-        method:"POST",body:JSON.stringify({reference:detail.reference,sourceSystem:detail.sourceSystem??"legacy",fingerprint:detail.fingerprint,serviceDate,delivery:overrides[detail.sourceKey]}) });
+        method:"POST",body:JSON.stringify({reference:detail.reference,sourceSystem:detail.sourceSystem??"legacy",...(detail.sourceSystem === "native-archive" ? {documentId:detail.sourceId} : {}),fingerprint:detail.fingerprint,serviceDate,delivery:overrides[detail.sourceKey]}) });
       if (!active.current) return;
-      setDetailKey(null);setMessage(`${result.count}건을 전표로 등록했습니다.${result.alreadyRegistered ? " 이미 등록한 전표는 중복 등록하지 않았습니다." : ""}`);
-      onSaved(serviceDate);setList(await api<SalesList>("/api/company-erp/sales/lists/"+list.id));
+      setMessage(`${result.count}건을 전표로 등록했습니다.${result.alreadyRegistered ? " 이미 등록한 전표는 중복 등록하지 않았습니다." : ""}`);
+      if (list.live) {
+        setDetail({...detail, registered:true, eligible:false});
+        setList({...list, documents:list.documents.map(doc => doc.sourceKey === detail.sourceKey ? {...doc,registered:true,eligible:false} : doc)});
+      } else {
+        setDetailKey(null);
+        setList(await api<SalesList>("/api/company-erp/sales/lists/"+list.id));
+      }
+      onSaved(serviceDate);
     } catch(e) { if(active.current)setDetailError((e as Error).message); }
     finally { guard.current=false;if(active.current)setBusy(false); }
   };
@@ -172,7 +176,7 @@ export default function CompanySalesBrowser({
   return (
     <>
       <Sheet
-        visible={!!batchId}
+        visible={!!batchId && !preview}
         title="판매조회 목록 · 전표 선택"
         onClose={() => {
           if (!busy) onClose();
@@ -373,7 +377,7 @@ export default function CompanySalesBrowser({
           </>
         )}
       </Sheet>
-      <Sheet visible={!!detailKey} title="판매전표 입력 · ERP 내용 확인" onClose={() => { if(!busy)setDetailKey(null); }}>
+      <Sheet visible={!!detailKey} title="판매전표 입력 · ERP 내용 확인" onClose={() => { if(!busy){setDetailKey(null);if(preview)onClose();} }}>
         {!detail && !detailError && <><ActivityIndicator color={C.green}/><Text style={s.muted}>ERP 판매 수정 화면의 최신 내용을 불러오는 중…</Text></>}
         {!!detailError && <Text accessibilityRole="alert" style={{color:C.red,marginBottom:14}}>{detailError}</Text>}
         {detail && <InvoiceContents doc={{...detail,...overrides[detail.sourceKey]}} />}
@@ -405,6 +409,10 @@ export default function CompanySalesBrowser({
               disabled={busy || !validSalesDate(serviceDate)} onPress={() => void confirmDetail()} />
           </View>
         )}
+        {list?.live && !!message && <View style={{gap:12,marginTop:16}}>
+          <Text accessibilityLiveRegion="polite" style={{color:C.green}}>{message}</Text>
+          {onRecommend && <Button title="등록한 전표로 지역별 배차 추천" onPress={() => onRecommend(serviceDate)} disabled={busy} />}
+        </View>}
       </Sheet>
     </>
   );

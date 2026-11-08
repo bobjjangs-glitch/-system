@@ -210,6 +210,6 @@ function bd_native_read(PDO $pdo,array $query,string $instance): array {
     if(isset($query['snapshot'])&&(!is_string($query['snapshot'])||!hash_equals($snapshot,$query['snapshot'])))throw new DomainException('조회 중 원본 전표 또는 ERP 수정본이 변경되었습니다. 다시 조회해 주세요.');
     $items=array_values(array_filter($documents,static fn($row)=>(int)$row['id']>(int)$cursor));$more=count($items)>(int)$limit;$items=array_slice($items,0,(int)$limit);
     $result=['schema'=>2,'ok'=>true,'kind'=>'sales','scope'=>$scope,'dateMode'=>'reference-or-date','invoiceVersion'=>$scope==='all'?1:2,'sourceSystem'=>'native-archive','instanceId'=>$instance,'snapshot'=>$snapshot,'total'=>count($documents),'cursor'=>$cursor,'nextCursor'=>$more?(string)end($items)['id']:null,'readAt'=>gmdate('Y-m-d\TH:i:s\Z'),'date'=>$query['date'],'excluded'=>['draft'=>0,'canceled'=>0],'items'=>$items];
-    if($scope==='capabilities')$result+=['bridgeVersion'=>'1.13.0','referenceLookup'=>true,'matchedSales'=>count($matched),'totalSales'=>(int)$pdo->query("SELECT COUNT(*) FROM `erp_ecount_documents` WHERE kind='sale'")->fetchColumn(),'salesTable'=>'erp_ecount_documents'];
+    if($scope==='capabilities')$result+=['bridgeVersion'=>'1.14.0','referenceLookup'=>true,'matchedSales'=>count($matched),'totalSales'=>(int)$pdo->query("SELECT COUNT(*) FROM `erp_ecount_documents` WHERE kind='sale'")->fetchColumn(),'salesTable'=>'erp_ecount_documents'];
     return $result;
 }

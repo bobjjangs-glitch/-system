@@ -56,6 +56,7 @@ import { createMapDocument } from "../src/mapDocument.ts";
 import { extractReceipt } from "../src/receiptText.ts";
 import { normalizeReceiptLayout } from "../src/receiptLayout.ts";
 import type { ReceiptLayout } from "../src/receiptText.ts";
+import { parseSalesReference, validSalesDate } from "../src/salesReference.ts";
 
 type AuthRequest = Request & { user: Session; token: string };
 class AppError extends Error {
@@ -764,6 +765,7 @@ export function createDispatchApp(
       salesInvoiceBrowser: true,
       automaticCompanyCatalogs: true,
       nativeArchiveInvoices: true,
+      automaticDailySales: true,
       administratorDelete: true,
       salesDateFilter: true,
       regionalDispatch: true,
@@ -795,20 +797,35 @@ export function createDispatchApp(
   app.post("/api/company-erp/catalog/refresh", admin, async (_req, res) =>
     res.json(await companyErp.refreshCatalogs()),
   );
-  app.get("/api/company-erp/connection", admin, async (req, res) =>
-    res.json({ version: APP_VERSION, ...await companyErp.connection(dateValue(req.query.date)) }),
-  );
+  app.get("/api/company-erp/connection", admin, async (req, res) => {
+    assert(req.query.expectedSource === undefined || req.query.expectedSource === "native-archive", "ERP 자료 구분을 확인해 주세요.", 400);
+    const date = dateValue(req.query.date);
+    res.json({ version: APP_VERSION, ...(req.query.expectedSource === "native-archive" ? await companyErp.verifyNativeConnection(date) : await companyErp.connection(date)) });
+  });
   app.get("/api/company-erp/invoices", admin, async (req, res) => {
     assert(typeof req.query.reference === "string", "전표번호를 입력해 주세요.", 400);
-    res.json(await companyErp.invoice(req.query.reference, req.query.sourceSystem as "native-archive" | "legacy" | undefined));
+    if (req.query.expectedSource !== undefined) {
+      assert(req.query.expectedSource === "native-archive", "ERP 자료 구분을 확인해 주세요.", 400);
+      await companyErp.verifyNativeConnection(parseSalesReference(req.query.reference)?.date ?? dateValue(undefined));
+    }
+    res.json(await companyErp.invoice(req.query.reference, req.query.sourceSystem as "native-archive" | "legacy" | undefined, req.query.documentId as string | undefined));
   });
   app.post("/api/company-erp/sales/confirm-reference", admin, async (req, res) => {
     assert(typeof req.body.reference === "string" && typeof req.body.fingerprint === "string", "확인할 ERP 전표를 선택해 주세요.",400);
-    res.status(201).json(await salesLists.confirmReference(req.body.reference,req.body.fingerprint,dateValue(req.body.serviceDate),req.body.delivery,req.body.sourceSystem));
+    res.status(201).json(await salesLists.confirmReference(req.body.reference,req.body.fingerprint,dateValue(req.body.serviceDate),req.body.delivery,req.body.sourceSystem,req.body.documentId));
   });
   app.post("/api/company-erp/sales/reference-list", admin, async (req, res) => {
     assert(typeof req.body.reference === "string", "전표번호를 입력해 주세요.", 400);
-    res.status(201).json(await salesLists.reference(req.body.reference, dateValue(req.body.serviceDate),req.body.sourceSystem));
+    res.status(201).json(await salesLists.reference(req.body.reference, dateValue(req.body.serviceDate),req.body.sourceSystem,req.body.documentId));
+  });
+  app.get("/api/company-erp/sales/preview", admin, async (req, res) => {
+    const salesDate = dateValue(req.query.salesDate), serviceDate = dateValue(req.query.serviceDate);
+    assert(validSalesDate(salesDate) && validSalesDate(serviceDate), "판매 조회일과 배송 예정일을 확인해 주세요.", 400);
+    const source = await companyErp.verifyNativeConnection(salesDate);
+    res.json({ ...await salesLists.preview(salesDate, serviceDate), source: {
+      provider: "company-erp", apiUrl: companyErp.status().apiUrl, bridgeVersion: source.bridgeVersion,
+      sourceSystem: source.sourceSystem, salesTable: source.salesTable,
+    } });
   });
   app.post("/api/company-erp/sales/lists", admin, async (req, res) =>
     res.status(201).json(await salesLists.fetch(

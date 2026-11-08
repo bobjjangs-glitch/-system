@@ -67,7 +67,7 @@ export default function InvoiceLookupPanel({
           sourceReadAt: string;
         }>(
           "/api/company-erp/invoices?reference=" +
-            encodeURIComponent(reference.trim()),
+            encodeURIComponent(reference.trim()) + "&expectedSource=native-archive",
         );
         if (!active.current) return;
         setDoc(result.document);
@@ -81,7 +81,7 @@ export default function InvoiceLookupPanel({
           bridgeVersion: string;
           matchedSales: number;
           totalSales: number;
-        }>("/api/company-erp/connection?date=" + queryDate);
+        }>("/api/company-erp/connection?date=" + queryDate + "&expectedSource=native-archive");
         if (active.current)
           setMessage(
             `ERP 연결 확인 완료 · 서버 ${result.version} / ERP 연동 ${result.bridgeVersion} · ${queryDate} 조회 ${result.matchedSales}건 / ERP 판매 전체 ${result.totalSales}건`,
@@ -95,7 +95,7 @@ export default function InvoiceLookupPanel({
             method: "POST",
             body: JSON.stringify(
               kind === "select"
-                ? { reference: doc!.reference, serviceDate: date }
+                ? { reference: doc!.reference, serviceDate: date, sourceSystem: doc!.sourceSystem ?? "legacy", ...(doc!.sourceSystem === "native-archive" ? {documentId:doc!.sourceId} : {}) }
                 : { salesDate: queryDate, serviceDate: date },
             ),
           },

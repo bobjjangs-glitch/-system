@@ -108,7 +108,7 @@ import InvoiceItemsEditor from "./src/InvoiceItemsEditor";
 import InvoiceLookupPanel from "./src/InvoiceLookupPanel";
 import CompanySalesBrowser from "./src/CompanySalesBrowser";
 import SalesInvoiceStatement from "./src/SalesInvoiceStatement";
-import type { SalesDocument } from "./src/salesDocuments";
+import type { SalesDocument, SalesList } from "./src/salesDocuments";
 import ErpSaleIdentity from "./src/ErpSaleIdentity";
 import PendingErpSales from "./src/PendingErpSales";
 import { invoiceTotals } from "./src/invoiceMath";
@@ -708,6 +708,23 @@ function Admin({
     [detail, setDetail] = useState<Shipment | null>(null),
     [assignment, setAssignment] = useState<Shipment | null>(null),
     [confirmClear, setConfirmClear] = useState(false);
+  const lastCalendarDay = useRef(date);
+  useEffect(() => {
+    const followCalendar = () => {
+      const next = koreanDate(), previous = lastCalendarDay.current;
+      if (next !== previous) {
+        lastCalendarDay.current = next;
+        setDate(value => value === previous ? next : value);
+      }
+    };
+    const timer = setInterval(followCalendar, 60000);
+    const focus = AppState.addEventListener("change", state => { if (state === "active") followCalendar(); });
+    if (Platform.OS === "web" && typeof window !== "undefined") window.addEventListener("focus", followCalendar);
+    return () => {
+      clearInterval(timer); focus.remove();
+      if (Platform.OS === "web" && typeof window !== "undefined") window.removeEventListener("focus", followCalendar);
+    };
+  }, []);
   const [regionFilter, setRegionFilter] = useState("all");
   useEffect(() => setRegionFilter("all"), [date]);
   const [boardOpen, setBoardOpen] = useState(false);
@@ -732,6 +749,8 @@ function Admin({
     startedAt: number;
   } | null>(null);
   const [salesBrowserId, setSalesBrowserId] = useState<string | null>(null);
+  const [liveSalesDocument, setLiveSalesDocument] = useState<{ list: SalesList; sourceKey: string } | null>(null);
+  const [salesRefreshKey, setSalesRefreshKey] = useState(0);
   const [invoiceStatement, setInvoiceStatement] =
     useState<SalesDocument | null>(null);
   const [reviewError, setReviewError] = useState("");
@@ -2046,6 +2065,8 @@ function Admin({
             <ErpImportPanel
               onOpenInvoices={() => setTab("invoices")}
               onSalesList={setSalesBrowserId}
+              onSalesDocument={(list, sourceKey) => { setSalesBrowserId(null); setLiveSalesDocument({list, sourceKey}); }}
+              refreshKey={salesRefreshKey}
               date={date}
               disabled={busy || !!uploadProgress || !!review}
 
@@ -3106,14 +3127,18 @@ function Admin({
         )}
       </Sheet>
       <CompanySalesBrowser
-        onRecommend={(value) => { setSalesBrowserId(null); setDate(value); setTab("routes"); void run(async () => { await post("/api/routes/optimize", { serviceDate: value, groupByRegion: true }); await refresh(); }); }}
+        onRecommend={(value) => { setSalesBrowserId(null); setLiveSalesDocument(null); setDate(value); setTab("routes"); void run(async () => { await post("/api/routes/optimize", { serviceDate: value, groupByRegion: true }); await refresh(); }); }}
         batchId={salesBrowserId}
-        onClose={() => setSalesBrowserId(null)}
+        preview={liveSalesDocument?.list}
+        initialSourceKey={liveSalesDocument?.sourceKey}
+        onClose={() => { setSalesBrowserId(null); setLiveSalesDocument(null); }}
         onFindInvoice={() => {
           setSalesBrowserId(null);
+          setLiveSalesDocument(null);
           setTab("invoices");
         }}
         onSaved={(value) => {
+          setSalesRefreshKey(key => key + 1);
           setDate(value);
           refresh().catch((e) => tell(e.message));
         }}
